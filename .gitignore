@@ -1,0 +1,67 @@
+# =====================
+# NODE MODULES
+# =====================
+node_modules/
+
+# =====================
+# ENV FILE (BẢO MẬT)
+# =====================
+.env
+.env.*
+!.env.example
+
+# =====================
+# LOG FILES
+# =====================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =====================
+# BUILD / DIST
+# =====================
+dist/
+build/
+out/
+
+# =====================
+# TEMP FILES
+# =====================
+tmp/
+temp/
+*.tmp
+
+# =====================
+# OS FILES
+# =====================
+.DS_Store
+Thumbs.db
+
+# =====================
+# IDE / EDITOR
+# =====================
+.vscode/
+.idea/
+*.swp
+
+# =====================
+# JAVA (nếu bạn dùng)
+# =====================
+target/
+*.class
+
+# =====================
+# TEST COVERAGE
+# =====================
+coverage/
+
+# =====================
+# PACKAGE LOCK (tuỳ chọn)
+# =====================
+package-lock.json
+yarn.lock
+
+### VS Code ###
+.vscode/
