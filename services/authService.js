@@ -36,8 +36,21 @@ const getAccessTokenExpirationInSeconds = () => {
   return 3600;
 };
 
+/**
+ * Xác thực Refresh Token
+ * @param {string} token - Refresh Token
+ */
+const verifyRefreshToken = (token) => {
+  try {
+    return jwt.verify(token, process.env.JWT_SECRET);
+  } catch (error) {
+    throw new Error('Refresh token không hợp lệ hoặc đã hết hạn');
+  }
+};
+
 module.exports = {
   generateAccessToken,
   generateRefreshToken,
+  verifyRefreshToken,
   getAccessTokenExpirationInSeconds,
 };

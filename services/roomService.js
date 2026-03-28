@@ -98,6 +98,61 @@ const leaveRoom = async (roomId, userId) => {
   broadcastLobbyRoomEvent(room, 'UPDATED');
 };
 
+/**
+ * Đuổi người chơi khỏi phòng
+ */
+const kickPlayer = async (roomId, adminId, targetUserId) => {
+  const room = await Room.findById(roomId);
+  if (!room) throw new Error('Không tìm thấy phòng');
+
+  // Kiểm tra quyền (phải là chủ phòng hoặc admin hệ thống)
+  const adminUser = await User.findById(adminId);
+  if (room.hostId.toString() !== adminId && adminUser.role !== 'ROLE_ADMIN') {
+    throw new Error('Bạn không có quyền đuổi người chơi');
+  }
+
+  if (targetUserId === room.hostId.toString()) {
+    throw new Error('Không thể đuổi chủ phòng');
+  }
+
+  await RoomPlayer.deleteOne({ roomId, userId: targetUserId });
+  room.currentPlayers = Math.max(0, room.currentPlayers - 1);
+  await room.save();
+
+  // Gửi thông báo cho người bị đuổi
+  emitToRoom(roomId, 'PLAYER_KICKED', {
+    user_id: targetUserId,
+    room_id: roomId
+  });
+
+  broadcastRoomUpdate(room);
+  broadcastLobbyRoomEvent(room, 'UPDATED');
+};
+
+/**
+ * Chuyển quyền chủ phòng
+ */
+const transferHost = async (roomId, currentHostId, newHostId) => {
+  const room = await Room.findById(roomId);
+  if (!room) throw new Error('Không tìm thấy phòng');
+
+  const adminUser = await User.findById(currentHostId);
+  if (room.hostId.toString() !== currentHostId && adminUser.role !== 'ROLE_ADMIN') {
+    throw new Error('Bạn không có quyền chuyển chủ phòng');
+  }
+
+  const newHostExists = await RoomPlayer.findOne({ roomId, userId: newHostId });
+  if (!newHostExists) {
+    throw new Error('Người chơi này không có trong phòng');
+  }
+
+  room.hostId = newHostId;
+  await room.save();
+
+  broadcastRoomUpdate(room);
+  return room;
+};
+
 const broadcastRoomUpdate = async (room) => {
   const players = await RoomPlayer.find({ roomId: room._id });
   emitToRoom(room._id, 'ROOM_UPDATED', {

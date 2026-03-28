@@ -1,6 +1,79 @@
 const { registerUser, findByUsernameOrEmail, findByEmail, generateResetToken, verifyResetToken, processPasswordReset, changePassword } = require('../services/userService');
-const { generateAccessToken, generateRefreshToken, getAccessTokenExpirationInSeconds } = require('../services/authService');
+const { generateAccessToken, generateRefreshToken, verifyRefreshToken, getAccessTokenExpirationInSeconds } = require('../services/authService');
 const { sendResetPasswordEmail } = require('../services/emailService');
+const User = require('../models/User');
+
+/**
+ * @desc    Làm mới Access Token
+ * @route   POST /api/auth/refresh
+ */
+const refresh = async (req, res, next) => {
+  try {
+    const { refresh_token } = req.body;
+    if (!refresh_token) {
+      res.status(400);
+      throw new Error('Thiếu Refresh Token');
+    }
+
+    const decoded = verifyRefreshToken(refresh_token);
+    const user = await User.findById(decoded.id);
+
+    if (!user) {
+      res.status(401);
+      throw new Error('Người dùng không tồn tại');
+    }
+
+    const accessToken = generateAccessToken(user);
+
+    res.json({
+      user_id: user._id,
+      username: user.username,
+      display_name: user.displayName,
+      avatar_url: user.avatarUrl,
+      role: user.role,
+      balance: user.balance,
+      access_token: accessToken,
+      expires_in: getAccessTokenExpirationInSeconds()
+    });
+  } catch (error) {
+    res.status(401);
+    next(error);
+  }
+};
+
+/**
+ * @desc    Lấy thông tin người dùng hiện tại
+ * @route   GET /api/auth/me
+ */
+const getMe = async (req, res, next) => {
+  try {
+    const user = req.user;
+    res.json({
+      user_id: user._id,
+      username: user.username,
+      display_name: user.displayName,
+      avatar_url: user.avatarUrl,
+      role: user.role,
+      balance: user.balance
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Đăng xuất
+ * @route   POST /api/auth/logout
+ */
+const logout = async (req, res, next) => {
+  try {
+    // Trong bản Node.js cơ bản này, chúng ta chỉ trả về thông báo thành công
+    // Frontend sẽ tự xóa token trong localStorage
+    res.json({ message: 'Đã đăng xuất thành công' });
+  } catch (error) {
+    next(error);
+  }
+};
 
 /**
  * @desc    Đăng ký người dùng
@@ -180,6 +253,9 @@ const changePasswordController = async (req, res, next) => {
 module.exports = {
   register,
   login,
+  refresh,
+  getMe,
+  logout,
   forgotPassword,
   verifyResetToken: verifyResetTokenController,
   resetPassword,

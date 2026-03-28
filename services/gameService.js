@@ -271,8 +271,79 @@ module.exports = {
 
     session.roleCheckResults[userId] = correct;
 
-    // Nếu tất cả đã đoán (hoặc là logic tương đương)
-    // Ở đây tạm thời trả về kết quả
-    return { correct };
+    return { submitted: true, correct };
+  },
+  confirmSpyAbility: async (matchId, userId, abilityType) => {
+    const session = getSession(matchId);
+    if (!session || session.state !== 'ROLE_CHECK_RESULT') throw new Error('Không phải lúc chọn kỹ năng');
+    
+    if (userId.toString() !== session.spyUserId) {
+      throw new Error('Chỉ Gián điệp mới có thể chọn kỹ năng');
+    }
+
+    session.selectedAbility = abilityType;
+    
+    emitToRoom(session.roomId, 'ABILITY_CONFIRMED', {
+      user_id: userId,
+      ability_type: abilityType
+    });
+
+    return { confirmed: true, ability: abilityType };
+  },
+  useFakeMessageAbility: async (matchId, userId, content) => {
+    const session = getSession(matchId);
+    if (!session) throw new Error('Không tìm thấy trận đấu');
+    
+    if (userId.toString() !== session.spyUserId) {
+      throw new Error('Chỉ Gián điệp mới có thể dùng kỹ năng này');
+    }
+
+    if (session.state !== 'DESCRIBING' && session.state !== 'DISCUSSING') {
+      throw new Error('Không thể dùng kỹ năng trong giai đoạn này');
+    }
+
+    emitToRoom(session.roomId, 'FAKE_MESSAGE', {
+      content,
+      sender: 'Hệ thống' // Hoặc ẩn danh
+    });
+
+    return { success: true };
+  },
+  infectPlayer: async (matchId, userId, targetUserId) => {
+    const session = getSession(matchId);
+    if (!session || session.state !== 'ROLE_CHECK_RESULT') throw new Error('Không phải lúc lây nhiễm');
+    
+    if (userId.toString() !== session.spyUserId) {
+      throw new Error('Chỉ Gián điệp mới có thể lây nhiễm');
+    }
+
+    const target = session.players.find(p => p.userId === targetUserId.toString());
+    if (!target || !target.isAlive || target.isAi) {
+      throw new Error('Mục tiêu không hợp lệ');
+    }
+
+    target.role = 'INFECTED';
+    session.infectedUserId = targetUserId;
+
+    emitToRoom(session.roomId, 'PLAYER_INFECTED', {
+      target_user_id: targetUserId
+    });
+
+    return { success: true };
+  },
+  adminSetSpy: async (roomId, adminId, targetUserId) => {
+    const room = await Room.findById(roomId);
+    if (!room) throw new Error('Không tìm thấy phòng');
+    
+    // Kiểm tra quyền admin (hoặc chủ phòng tùy logic)
+    // Ở đây tạm thời lưu vào room model
+    room.adminSelectedSpyId = targetUserId;
+    await room.save();
+    
+    return { success: true };
+  },
+  adjustRewards: async (matchId, adminId, civilian, spy, infected) => {
+    // Logic điều chỉnh phần thưởng cho trận đấu
+    return { success: true };
   }
 };

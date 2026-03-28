@@ -87,8 +87,62 @@ const getTransactions = async (req, res, next) => {
   }
 };
 
+/**
+ * @desc    Lấy trạng thái điểm danh hôm nay
+ * @route   GET /api/economy/daily-checkin/status
+ */
+const getCheckinStatus = async (req, res, next) => {
+  try {
+    const user = req.user;
+    const alreadyCheckedIn = await hasCheckedInToday(user._id);
+    const currentStreak = user.checkinStreak || 0;
+    
+    // Phần thưởng theo ngày: [10, 10, 10, 10, 20, 20, 30]
+    const rewards = [10, 10, 10, 10, 20, 20, 30];
+    
+    // Nếu đã điểm danh rồi thì hiển thị streak hiện tại, 
+    // nếu chưa thì hiển thị streak sẽ đạt được nếu điểm danh ngay bây giờ
+    const nextStreak = alreadyCheckedIn ? currentStreak : (currentStreak % 7) + 1;
+    
+    res.json({
+      can_checkin: !alreadyCheckedIn,
+      streak: alreadyCheckedIn ? currentStreak : nextStreak,
+      today_reward: rewards[(alreadyCheckedIn ? currentStreak : nextStreak) - 1]
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Lấy số dư của user khác (Admin)
+ * @route   GET /api/economy/balance/:userId
+ */
+const getUserBalance = async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      res.status(404);
+      throw new Error('Không tìm thấy người dùng');
+    }
+
+    res.json({
+      user_id: user._id,
+      username: user.username,
+      balance: user.balance,
+      ranking_points: user.rankingPoints
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getBalance,
+  getUserBalance,
+  getCheckinStatus,
   dailyCheckin: dailyCheckinController,
   getRelief: getReliefController,
   getLeaderboard: getLeaderboardController,
