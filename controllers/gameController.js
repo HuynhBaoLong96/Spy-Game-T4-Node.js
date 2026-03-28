@@ -1,4 +1,4 @@
-const { startGame, getSession, submitDescription, submitVote, submitChat, submitRoleGuess, confirmSpyAbility, useFakeMessageAbility, infectPlayer, adminSetSpy, adjustRewards } = require('../services/gameService');
+const { startGame, getSession, submitDescription, submitVote, submitChat, submitRoleGuess, confirmSpyAbility, useFakeMessageAbility, infectPlayer, adminSetSpy, adjustRewards, setGameState } = require('../services/gameService');
 
 /**
  * @desc    Bắt đầu game
@@ -105,7 +105,7 @@ const submitChatController = async (req, res, next) => {
 const submitRoleGuessController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const { guessed_role } = req.body;
+    const guessed_role = req.body.guessed_role || req.body.role;
     const user = req.user;
 
     const result = await submitRoleGuess(matchId, user._id, guessed_role);
@@ -159,7 +159,7 @@ const useFakeMessageController = async (req, res, next) => {
 const infectPlayerController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const { target_user_id } = req.body;
+    const target_user_id = req.body.target_user_id || req.body.target_id || req.body.targetId;
     const user = req.user;
 
     const result = await infectPlayer(matchId, user._id, target_user_id);
@@ -181,6 +181,23 @@ const adjustRewardsController = async (req, res, next) => {
     const admin = req.user;
 
     const result = await adjustRewards(matchId, admin._id, civilian, spy, infected);
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Cài đặt trạng thái game (Debug/Admin)
+ * @route   POST /api/game/:matchId/set-state
+ */
+const setGameStateController = async (req, res, next) => {
+  try {
+    const { matchId } = req.params;
+    const { state } = req.body;
+    
+    const result = await setGameState(matchId, state);
 
     res.json(result);
   } catch (error) {
@@ -216,7 +233,7 @@ const submitDescriptionController = async (req, res, next) => {
 const submitVoteController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const { target_user_id } = req.body;
+    const target_user_id = req.body.target_user_id || req.body.target_id || req.body.targetId;
     const user = req.user;
 
     await submitVote(matchId, user._id, target_user_id);
@@ -237,6 +254,7 @@ module.exports = {
   useFakeMessage: useFakeMessageController,
   infectPlayer: infectPlayerController,
   adjustRewards: adjustRewardsController,
+  setGameState: setGameStateController,
   submitDescription: submitDescriptionController,
   submitVote: submitVoteController,
 };

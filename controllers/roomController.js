@@ -1,4 +1,4 @@
-const { createRoom, joinRoom, leaveRoom, kickPlayer, transferHost } = require('../services/roomService');
+const { createRoom, joinRoom, leaveRoom, kickPlayer, transferHost, voteByRoom, getMostVotedResult, getRoomMessages, sendRoomMessage } = require('../services/roomService');
 const Room = require('../models/Room');
 const RoomPlayer = require('../models/RoomPlayer');
 
@@ -182,14 +182,15 @@ const getRoomByCodeController = async (req, res, next) => {
 
 /**
  * @desc    Đuổi người chơi (Host/Admin)
- * @route   POST /api/rooms/:roomId/kick/:userId
+ * @route   POST /api/rooms/:roomId/kick
  */
 const kickPlayerController = async (req, res, next) => {
   try {
-    const { roomId, userId } = req.params;
+    const { roomId } = req.params;
+    const { user_id } = req.body;
     const adminId = req.user._id;
 
-    await kickPlayer(roomId, adminId, userId);
+    await kickPlayer(roomId, adminId, user_id);
 
     res.json({ message: 'Đã đuổi người chơi thành công' });
   } catch (error) {
@@ -199,16 +200,83 @@ const kickPlayerController = async (req, res, next) => {
 
 /**
  * @desc    Chuyển quyền chủ phòng (Host/Admin)
- * @route   POST /api/rooms/:roomId/transfer-host/:userId
+ * @route   POST /api/rooms/:roomId/transfer-host
  */
 const transferHostController = async (req, res, next) => {
   try {
-    const { roomId, userId } = req.params;
+    const { roomId } = req.params;
+    const { user_id } = req.body;
     const currentHostId = req.user._id;
 
-    await transferHost(roomId, currentHostId, userId);
+    await transferHost(roomId, currentHostId, user_id);
 
     res.json({ message: 'Đã chuyển quyền chủ phòng thành công' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Vote trong phòng (Lobby)
+ * @route   POST /api/rooms/:roomId/vote
+ */
+const voteByRoomController = async (req, res, next) => {
+  try {
+    const { roomId } = req.params;
+    const { targetId } = req.body;
+    const user = req.user;
+
+    await voteByRoom(roomId, user._id, targetId);
+
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Lấy kết quả được vote nhiều nhất
+ * @route   GET /api/rooms/:roomId/result/most-voted
+ */
+const getMostVotedResultController = async (req, res, next) => {
+  try {
+    const { roomId } = req.params;
+    const result = await getMostVotedResult(roomId);
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Lấy danh sách tin nhắn trong phòng
+ * @route   GET /api/rooms/:roomId/messages
+ */
+const getRoomMessagesController = async (req, res, next) => {
+  try {
+    const { roomId } = req.params;
+    const messages = await getRoomMessages(roomId);
+
+    res.json({ messages });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Gửi tin nhắn trong phòng
+ * @route   POST /api/rooms/:roomId/messages
+ */
+const sendRoomMessageController = async (req, res, next) => {
+  try {
+    const { roomId } = req.params;
+    const { content } = req.body;
+    const user = req.user;
+
+    const message = await sendRoomMessage(roomId, user._id, content);
+
+    res.json(message);
   } catch (error) {
     next(error);
   }
@@ -224,4 +292,8 @@ module.exports = {
   getRoomByCode: getRoomByCodeController,
   kickPlayer: kickPlayerController,
   transferHost: transferHostController,
+  voteByRoom: voteByRoomController,
+  getMostVotedResult: getMostVotedResultController,
+  getRoomMessages: getRoomMessagesController,
+  sendRoomMessage: sendRoomMessageController,
 };

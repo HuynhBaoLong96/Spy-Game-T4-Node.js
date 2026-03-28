@@ -345,5 +345,21 @@ module.exports = {
   adjustRewards: async (matchId, adminId, civilian, spy, infected) => {
     // Logic điều chỉnh phần thưởng cho trận đấu
     return { success: true };
+  },
+  setGameState: async (matchId, state) => {
+    const session = gameSessions.get(matchId.toString());
+    if (!session) throw new Error('Không tìm thấy trận đấu');
+    
+    session.state = state;
+    session.phaseStartTime = Date.now();
+    
+    emitToRoom(session.roomId, 'PHASE_UPDATE', {
+      state: session.state,
+      startTime: session.phaseStartTime,
+      endTime: session.phaseEndTime,
+      currentRound: session.currentRound
+    });
+
+    return { success: true, state };
   }
 };

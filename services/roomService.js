@@ -179,6 +179,40 @@ module.exports = {
   createRoom,
   joinRoom,
   leaveRoom,
+  kickPlayer,
+  transferHost,
   broadcastRoomUpdate,
   broadcastLobbyRoomEvent,
+  voteByRoom: async (roomId, voterId, targetId) => {
+    // Tạm thời emit socket cho đơn giản
+    emitToRoom(roomId, 'ROOM_VOTE', {
+      voter_id: voterId,
+      target_id: targetId
+    });
+    return { success: true };
+  },
+  getMostVotedResult: async (roomId) => {
+    // Mock result
+    return { 
+      room_id: roomId,
+      most_voted_user_id: null,
+      votes_count: 0
+    };
+  },
+  getRoomMessages: async (roomId) => {
+    // Mock messages
+    return [];
+  },
+  sendRoomMessage: async (roomId, userId, content) => {
+    const user = await User.findById(userId);
+    const message = {
+      user_id: userId,
+      display_name: user ? (user.displayName || user.username) : 'Unknown',
+      content,
+      sent_at: new Date().toISOString()
+    };
+    
+    emitToRoom(roomId, 'ROOM_MESSAGE', message);
+    return message;
+  }
 };
