@@ -7,7 +7,7 @@ const UserStats = require('../models/UserStats');
 const GameSettings = require('../models/GameSettings');
 const { getRandomKeywordPair } = require('./keywordService');
 const { deductEntryFee, addReward } = require('./economyService');
-const { emitToRoom } = require('./socketService');
+const { emitToRoom, emitToUser, emitToTopic } = require('./socketService');
 const { getAiDescription } = require('./aiService');
 
 // Lưu trữ các phiên chơi đang diễn ra trong bộ nhớ
@@ -114,6 +114,10 @@ const startGame = async (roomId, hostUserId) => {
   // 9. Cập nhật trạng thái phòng
   room.status = 'playing';
   await room.save();
+  
+  // Thông báo cho Lobby
+  const { broadcastLobbyRoomEvent } = require('./roomService');
+  broadcastLobbyRoomEvent(room, 'UPDATED');
 
   // 10. Thông báo bắt đầu game qua Socket
   emitToRoom(roomId, 'GAME_START', {
@@ -131,20 +135,30 @@ const startGame = async (roomId, hostUserId) => {
 
 const broadcastRoles = (session) => {
   session.players.forEach(player => {
-    // Chỉ gửi thông tin vai trò cho chính người đó (hoặc tất cả nếu là AI/debug)
-    // Thực tế FE sẽ nhận được danh sách player nhưng chỉ xem được vai của mình
-    emitToRoom(session.roomId, 'ROLE_INFO', {
-      players: session.players.map(p => ({
-        userId: p.userId,
-        username: p.username,
-        displayName: p.displayName,
-        color: p.color,
-        isAlive: p.isAlive,
-        isAi: p.isAi,
-        // Chỉ gửi role nếu là chính người đó hoặc game đã kết thúc
-        role: p.userId === player.userId ? p.role : 'hidden'
-      }))
+    if (player.isAi) return;
+    
+    // Gửi thông tin vai trò riêng tư cho từng người (Java dùng /user/queue/role)
+    emitToUser(player.userId, 'role', {
+      role: player.role,
+      keyword: player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
+      matchId: session.matchId
     });
+  });
+
+  // Gửi danh sách người chơi (ẩn vai trò) cho tất cả qua topic match
+  emitToTopic(`/topic/match/${session.matchId}`, {
+    type: 'MATCH_UPDATE',
+    matchId: session.matchId,
+    state: session.state,
+    players: session.players.map(p => ({
+      user_id: p.userId,
+      username: p.username,
+      display_name: p.displayName,
+      color: p.color,
+      is_alive: p.isAlive,
+      is_ai: p.isAi,
+      role: 'hidden'
+    }))
   });
 };
 
@@ -152,10 +166,14 @@ const startPhaseTimer = (session, durationMs, nextPhaseFn) => {
   session.phaseStartTime = Date.now();
   session.phaseEndTime = Date.now() + durationMs;
   
-  emitToRoom(session.roomId, 'PHASE_UPDATE', {
+  // Thông báo chuyển phase tới topic match
+  emitToTopic(`/topic/match/${session.matchId}`, {
+    type: 'PHASE_UPDATE',
     state: session.state,
     startTime: session.phaseStartTime,
     endTime: session.phaseEndTime,
+    phase_end_at: new Date(session.phaseEndTime).toISOString(),
+    remaining_seconds: Math.floor(durationMs / 1000),
     currentRound: session.currentRound
   });
 
@@ -184,8 +202,18 @@ const moveToVoting = (session) => {
 
 const processVoteResult = async (session) => {
   // Logic xử lý kết quả vote (tương tự VoteManager trong Java)
-  // ... (Tạm thời để trống để hoàn thiện sau)
   console.log('Đang xử lý kết quả vote cho trận:', session.matchId);
+  
+  // Broadcast kết quả vòng (Java dùng /topic/match/{matchId}/round-result)
+  emitToTopic(`/topic/match/${session.matchId}/round-result`, {
+    eliminated_user_id: null, // Placeholder
+    eliminated_display_name: 'Không ai',
+    role: 'NONE',
+    is_spy: false
+  });
+
+  // Nếu game kết thúc (Java dùng /topic/match/{matchId}/game-over)
+  // emitToTopic(`/topic/match/${session.matchId}/game-over`, { ... });
 };
 
 const getSession = (matchId) => gameSessions.get(matchId.toString());
@@ -220,10 +248,15 @@ module.exports = {
     }
     session.descriptions[session.currentRound][userId] = content;
 
-    emitToRoom(session.roomId, 'DESCRIPTION_SUBMITTED', {
-      userId,
-      content,
-      round: session.currentRound
+    // Broadcast cho match (Java dùng /topic/match/{matchId}/descriptions)
+    const descriptions = Object.entries(session.descriptions[session.currentRound]).map(([uid, c]) => ({
+      user_id: uid,
+      content: c
+    }));
+    
+    emitToTopic(`/topic/match/${matchId}/descriptions`, {
+      descriptions,
+      all_submitted: descriptions.length >= session.players.filter(p => p.isAlive).length
     });
   },
   submitChat: async (matchId, userId, content) => {
@@ -233,13 +266,12 @@ module.exports = {
     const player = getAlivePlayer(session, userId);
     const name = getAnonymousName(player);
 
-    emitToRoom(session.roomId, 'CHAT_MESSAGE', {
-      user_id: userId,
-      display_name: name,
-      color: player.color,
-      content,
-      sender: name,
-      sent_at: new Date().toISOString()
+    // Broadcast tới topic chat của match (Java dùng /topic/match/{matchId}/chat)
+    emitToTopic(`/topic/match/${matchId}/chat`, {
+      sender_id: userId,
+      sender_name: name,
+      content: content,
+      timestamp: Date.now()
     });
   },
   submitVote: async (matchId, voterId, targetId) => {
@@ -253,11 +285,13 @@ module.exports = {
     }
     session.votes[session.currentRound][voterId] = targetId;
 
-    emitToRoom(session.roomId, 'VOTE_SUBMITTED', {
-      voterId,
-      targetId,
-      round: session.currentRound
+    // Broadcast vote counts tới topic votes của match (Java dùng /topic/match/{matchId}/votes)
+    const voteCounts = {};
+    Object.values(session.votes[session.currentRound]).forEach(tid => {
+      voteCounts[tid] = (voteCounts[tid] || 0) + 1;
     });
+
+    emitToTopic(`/topic/match/${matchId}/votes`, voteCounts);
   },
   submitRoleGuess: async (matchId, userId, guessedRole) => {
     const session = getSession(matchId);
@@ -271,6 +305,15 @@ module.exports = {
 
     session.roleCheckResults[userId] = correct;
 
+    // Gửi kết quả riêng cho user (Java dùng /user/queue/role-check-result)
+    emitToUser(userId, 'role-check-result', {
+      correct,
+      actual_role: isSpy ? 'SPY' : 'CIVILIAN',
+      reward_coins: correct ? 10 : 0, // Mock reward
+      abilities_available: (isSpy && correct) ? ['FAKE_MESSAGE', 'INFECT'] : [],
+      acknowledged: false
+    });
+
     return { submitted: true, correct };
   },
   confirmSpyAbility: async (matchId, userId, abilityType) => {
@@ -283,9 +326,11 @@ module.exports = {
 
     session.selectedAbility = abilityType;
     
-    emitToRoom(session.roomId, 'ABILITY_CONFIRMED', {
-      user_id: userId,
-      ability_type: abilityType
+    // Gửi xác nhận kỹ năng riêng cho user (Java dùng /user/queue/ability-result)
+    emitToUser(userId, 'ability-result', {
+      success: true,
+      confirmed_ability: abilityType,
+      message: `Bạn đã chọn kỹ năng: ${abilityType}`
     });
 
     return { confirmed: true, ability: abilityType };
@@ -302,9 +347,13 @@ module.exports = {
       throw new Error('Không thể dùng kỹ năng trong giai đoạn này');
     }
 
-    emitToRoom(session.roomId, 'FAKE_MESSAGE', {
+    // Broadcast fake message (Java dùng /topic/match/{matchId}/chat)
+    emitToTopic(`/topic/match/${matchId}/chat`, {
+      sender_id: 'system',
+      sender_name: 'Ẩn danh',
       content,
-      sender: 'Hệ thống' // Hoặc ẩn danh
+      timestamp: Date.now(),
+      is_fake: true
     });
 
     return { success: true };
@@ -325,8 +374,18 @@ module.exports = {
     target.role = 'INFECTED';
     session.infectedUserId = targetUserId;
 
-    emitToRoom(session.roomId, 'PLAYER_INFECTED', {
-      target_user_id: targetUserId
+    // Gửi thông báo lây nhiễm riêng cho mục tiêu (Java dùng /user/queue/infection)
+    emitToUser(targetUserId, 'infection', {
+      type: 'INFECTED',
+      spy_keyword: session.spyKeyword,
+      message: 'Bạn đã bị Gián điệp lây nhiễm! Hãy giúp Gián điệp chiến thắng.'
+    });
+
+    // Gửi xác nhận cho Spy (Java dùng /user/queue/ability-result)
+    emitToUser(userId, 'ability-result', {
+      success: true,
+      type: 'INFECT',
+      message: `Bạn đã lây nhiễm thành công ${target.displayName}`
     });
 
     return { success: true };

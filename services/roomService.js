@@ -162,16 +162,15 @@ const broadcastRoomUpdate = async (room) => {
 };
 
 const broadcastLobbyRoomEvent = (room, eventType) => {
+  // Java FE mong đợi cấu trúc: { type, room_id, room_code, current_players, max_players, status, is_private }
   emitToLobby('LOBBY_ROOM_EVENT', {
-    type: eventType,
-    room: {
-      id: room._id,
-      roomCode: room.roomCode,
-      currentPlayers: room.currentPlayers,
-      maxPlayers: room.maxPlayers,
-      status: room.status,
-      isPrivate: room.isPrivate
-    }
+    type: eventType === 'DELETED' ? 'ROOM_DELETED' : 'ROOM_UPDATED',
+    room_id: room._id,
+    room_code: room.roomCode,
+    current_players: room.currentPlayers,
+    max_players: room.maxPlayers,
+    status: room.status,
+    is_private: room.isPrivate
   });
 };
 
