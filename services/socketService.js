@@ -4,6 +4,7 @@ const RoomPlayer = require('../models/RoomPlayer');
 let stompServer;
 const sessionToUser = new Map(); // sessionId -> { userId, roomId, username }
 const userToSessions = new Map(); // userId -> Set(sessionId)
+const sessionToClient = new Map(); // sessionId -> client object
 
 const init = (server) => {
   stompServer = new StompServer({
@@ -13,13 +14,21 @@ const init = (server) => {
       // console.log(`[STOMP-DEBUG] ${str}`);
     },
 
-    onConnected: (sessionId, headers) => {
+    onConnected: (sessionId, headers, client) => {
       console.log(`[STOMP] Client connected: ${sessionId}`);
+      sessionToClient.set(sessionId, client);
     },
 
     onDisconnected: (sessionId) => {
       console.log(`[STOMP] Client disconnected: ${sessionId}`);
+      
       const sessionData = sessionToUser.get(sessionId);
+      if (sessionData && sessionData.roomId) {
+        // Import gameService và gọi handlePlayerQuit nếu game đang chạy
+        const { handlePlayerQuit } = require('./gameService');
+        handlePlayerQuit(sessionData.roomId, sessionData.userId);
+      }
+
       if (sessionData) {
         const { userId } = sessionData;
         const sessions = userToSessions.get(userId);
@@ -31,6 +40,7 @@ const init = (server) => {
         }
         sessionToUser.delete(sessionId);
       }
+      sessionToClient.delete(sessionId);
     },
 
     onSend: async (frame, client) => {
@@ -115,13 +125,11 @@ const emitToUser = (userId, topic, data) => {
   const sessions = userToSessions.get(userId.toString());
   if (sessions) {
     sessions.forEach(sessionId => {
-      // stomp-server library thường không có hàm gửi cho 1 sessionId cụ thể trực tiếp qua topic ảo
-      // Chúng ta sẽ dùng topic mà client đã subscribe: /user/queue/{topic}
-      // Lưu ý: Client subscribe /user/queue/role, server gửi tới topic đó
-      // Nhưng stomp-server.send(topic, headers, body) sẽ gửi cho TẤT CẢ người subscribe topic đó.
-      // Để gửi riêng, ta cần một cơ chế lọc hoặc dùng topic duy nhất cho mỗi user.
-      // Tuy nhiên, để khớp với FE dùng /user/queue/..., ta có thể giả lập bằng cách:
-      stompServer.send(`/user/queue/${topic}`, { 'user-id': userId.toString() }, JSON.stringify(data));
+      const client = sessionToClient.get(sessionId);
+      if (client) {
+        // Gửi trực tiếp cho client đó, không dùng stompServer.send()
+        client.send(`/user/queue/${topic}`, {}, JSON.stringify(data));
+      }
     });
   }
 };

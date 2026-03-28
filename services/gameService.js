@@ -13,6 +13,18 @@ const { getAiDescription } = require('./aiService');
 // Lưu trữ các phiên chơi đang diễn ra trong bộ nhớ
 const gameSessions = new Map();
 
+const PHASE_DURATIONS = {
+  ROLE_ASSIGN: 10,
+  DESCRIBING: 300,
+  DISCUSSING: 300,
+  VOTING: 300,
+  VOTE_TIE: 10,
+  ROUND_RESULT: 5,
+  ROLE_CHECK: 300,
+  ROLE_CHECK_RESULT: 10,
+  GAME_OVER: 0
+};
+
 /**
  * Khởi tạo một phiên chơi mới
  */
@@ -53,8 +65,9 @@ const startGame = async (roomId, hostUserId) => {
     descriptions: {}, // round -> userId -> content
     votes: {},        // round -> userId -> targetId
     roleCheckResults: {}, // userId -> correct (boolean)
+    roleCheckDone: false,
     phaseStartTime: Date.now(),
-    phaseEndTime: Date.now() + 10000, // 10s xem vai
+    phaseEndTime: Date.now() + (PHASE_DURATIONS.ROLE_ASSIGN * 1000),
   };
 
   // 5. Tạo danh sách người chơi (bao gồm 1 AI)
@@ -128,7 +141,7 @@ const startGame = async (roomId, hostUserId) => {
 
   // Chuyển sang phase ROLE_ASSIGN
   broadcastRoles(session);
-  startPhaseTimer(session, 10000, moveToDescribing);
+  startPhaseTimer(session, PHASE_DURATIONS.ROLE_ASSIGN * 1000, moveToDescribing);
 
   return session;
 };
@@ -140,15 +153,17 @@ const broadcastRoles = (session) => {
     // Gửi thông tin vai trò riêng tư cho từng người (Java dùng /user/queue/role)
     emitToUser(player.userId, 'role', {
       role: player.role,
-      keyword: player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
-      matchId: session.matchId
+      your_keyword: player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
+      match_id: session.matchId,
+      round: session.currentRound,
+      color: player.color
     });
   });
 
   // Gửi danh sách người chơi (ẩn vai trò) cho tất cả qua topic match
   emitToTopic(`/topic/match/${session.matchId}`, {
     type: 'MATCH_UPDATE',
-    matchId: session.matchId,
+    match_id: session.matchId,
     state: session.state,
     players: session.players.map(p => ({
       user_id: p.userId,
@@ -157,7 +172,7 @@ const broadcastRoles = (session) => {
       color: p.color,
       is_alive: p.isAlive,
       is_ai: p.isAi,
-      role: 'hidden'
+      role: 'unknown'
     }))
   });
 };
@@ -177,7 +192,9 @@ const startPhaseTimer = (session, durationMs, nextPhaseFn) => {
     currentRound: session.currentRound
   });
 
-  setTimeout(() => {
+  if (session.timerId) clearTimeout(session.timerId);
+  
+  session.timerId = setTimeout(() => {
     const currentSession = gameSessions.get(session.matchId.toString());
     if (currentSession && currentSession.state === session.state) {
       nextPhaseFn(currentSession);
@@ -187,40 +204,271 @@ const startPhaseTimer = (session, durationMs, nextPhaseFn) => {
 
 const moveToDescribing = (session) => {
   session.state = 'DESCRIBING';
-  startPhaseTimer(session, 60000, moveToDiscussing); // 60s mô tả
+  startPhaseTimer(session, PHASE_DURATIONS.DESCRIBING * 1000, moveToDiscussing);
 };
 
 const moveToDiscussing = (session) => {
   session.state = 'DISCUSSING';
-  startPhaseTimer(session, 90000, moveToVoting); // 90s thảo luận
+  startPhaseTimer(session, PHASE_DURATIONS.DISCUSSING * 1000, moveToVoting);
 };
 
 const moveToVoting = (session) => {
   session.state = 'VOTING';
-  startPhaseTimer(session, 30000, processVoteResult); // 30s vote
+  startPhaseTimer(session, PHASE_DURATIONS.VOTING * 1000, processVoteResult);
 };
 
 const processVoteResult = async (session) => {
-  // Logic xử lý kết quả vote (tương tự VoteManager trong Java)
   console.log('Đang xử lý kết quả vote cho trận:', session.matchId);
   
-  // Broadcast kết quả vòng (Java dùng /topic/match/{matchId}/round-result)
-  emitToTopic(`/topic/match/${session.matchId}/round-result`, {
-    eliminated_user_id: null, // Placeholder
-    eliminated_display_name: 'Không ai',
-    role: 'NONE',
-    is_spy: false
+  const currentVotes = session.votes[session.currentRound] || {};
+  const voteCounts = {};
+  
+  Object.values(currentVotes).forEach(targetId => {
+    voteCounts[targetId] = (voteCounts[targetId] || 0) + 1;
   });
 
-  // Nếu game kết thúc (Java dùng /topic/match/{matchId}/game-over)
-  // emitToTopic(`/topic/match/${session.matchId}/game-over`, { ... });
+  const voteEntries = Object.entries(voteCounts);
+  if (voteEntries.length === 0) {
+    return moveToVoteTie(session);
+  }
+
+  const maxVotes = Math.max(...Object.values(voteCounts));
+  const topVoted = voteEntries.filter(([id, count]) => count === maxVotes).map(([id]) => id);
+
+  if (topVoted.length > 1) {
+    moveToVoteTie(session);
+  } else {
+    await eliminatePlayer(session, topVoted[0]);
+  }
+};
+
+const eliminatePlayer = async (session, userId) => {
+  const player = session.players.find(p => p.userId === userId);
+  if (player) {
+    player.isAlive = false;
+    // Cập nhật MatchPlayer trong DB
+    await MatchPlayer.updateOne(
+      { matchId: session.matchId, userId: userId },
+      { isAlive: false, eliminatedRound: session.currentRound }
+    );
+  }
+
+  session.state = 'ROUND_RESULT';
+  
+  emitToTopic(`/topic/match/${session.matchId}/round-result`, {
+    eliminated_user_id: userId,
+    eliminated_display_name: player ? player.displayName : 'Unknown',
+    role: player ? player.role : 'NONE',
+    is_spy: player ? (player.role === 'SPY' || player.role === 'INFECTED') : false
+  });
+
+  startPhaseTimer(session, PHASE_DURATIONS.ROUND_RESULT * 1000, checkWinCondition);
+};
+
+const moveToVoteTie = (session) => {
+  session.state = 'VOTE_TIE';
+  startPhaseTimer(session, PHASE_DURATIONS.VOTE_TIE * 1000, startNextRound);
+};
+
+const checkWinCondition = async (session) => {
+  const alivePlayers = session.players.filter(p => p.isAlive);
+  const spyAlive = alivePlayers.some(p => p.role === 'SPY' || p.role === 'INFECTED');
+  const civilianHumansAlive = alivePlayers.filter(p => !p.isAi && p.role === 'civilian').length;
+
+  if (!spyAlive) {
+    await moveToGameOver(session, 'civilians');
+  } else if (civilianHumansAlive <= 1) {
+    await moveToGameOver(session, 'spy');
+  } else {
+    await startNextRound(session);
+  }
+};
+
+const startNextRound = async (session) => {
+  session.currentRound++;
+  session.aiDiscussUsedThisRound = false;
+  // Reset descriptions/votes for new round
+  session.descriptions[session.currentRound] = {};
+  session.votes[session.currentRound] = {};
+
+  if (session.currentRound === 2 && !session.roleCheckDone) {
+    await moveToRoleCheck(session);
+  } else {
+    moveToDescribing(session);
+  }
+};
+
+const moveToRoleCheck = async (session) => {
+  session.state = 'ROLE_CHECK';
+  
+  // AI auto guess
+  await autoRoleCheckForAi(session);
+  
+  startPhaseTimer(session, PHASE_DURATIONS.ROLE_CHECK * 1000, onRoleCheckPhaseEnd);
+};
+
+const onRoleCheckPhaseEnd = async (session) => {
+  // Những người chưa đoán coi như sai (đã được handle trong submitRoleGuess hoặc mặc định là sai)
+  await moveToRoleCheckResult(session);
+};
+
+const moveToRoleCheckResult = async (session) => {
+  session.state = 'ROLE_CHECK_RESULT';
+  await broadcastRoleCheckResults(session);
+  startPhaseTimer(session, PHASE_DURATIONS.ROLE_CHECK_RESULT * 1000, onRoleCheckResultPhaseEnd);
+};
+
+const broadcastRoleCheckResults = async (session) => {
+  const aliveHumans = session.players.filter(p => p.isAlive && !p.isAi).map(p => p.userId);
+
+  for (const player of session.players) {
+    if (player.isAi) continue;
+
+    const correct = session.roleCheckResults[player.userId] === true;
+    const isSpy = player.userId === session.spyUserId;
+    
+    const result = {
+      correct,
+      actual_role: isSpy ? 'SPY' : 'CIVILIAN',
+      reward_coins: correct ? 10 : 0,
+      abilities_available: (isSpy && correct) ? ['FAKE_MESSAGE', 'INFECT'] : [],
+      alive_humans: (isSpy && correct) ? aliveHumans : [],
+      acknowledged: false
+    };
+
+    if (correct) {
+      await addReward(player.userId, 10, 'GAME_REWARD', 'Đoán đúng vai trò');
+    }
+
+    emitToUser(player.userId, 'role-check-result', result);
+  }
+};
+
+const onRoleCheckResultPhaseEnd = async (session) => {
+  session.roleCheckDone = true;
+  moveToDescribing(session);
+};
+
+const moveToGameOver = async (session, winnerRole) => {
+  session.state = 'GAME_OVER';
+  
+  await processEndGameRewards(session, winnerRole);
+
+  emitToTopic(`/topic/match/${session.matchId}/game-over`, {
+    winner_role: winnerRole,
+    players: session.players.map(p => ({
+      user_id: p.userId,
+      display_name: p.displayName,
+      role: p.role,
+      is_alive: p.isAlive
+    }))
+  });
+
+  // Cập nhật Match trong DB
+  await Match.findByIdAndUpdate(session.matchId, { status: 'completed', winner: winnerRole });
+  
+  // Reset Room
+  const room = await Room.findById(session.roomId);
+  if (room) {
+    room.status = 'waiting';
+    await room.save();
+    const { broadcastLobbyRoomEvent } = require('./roomService');
+    broadcastLobbyRoomEvent(room, 'UPDATED');
+  }
+
+  gameSessions.delete(session.matchId);
+};
+
+const processEndGameRewards = async (session, winnerRole) => {
+  for (const player of session.players) {
+    if (player.isAi) continue;
+
+    let reward = 0;
+    let didWin = false;
+
+    if (winnerRole === 'spy') {
+      if (player.role === 'SPY' || player.role === 'INFECTED') {
+        reward = 25;
+        didWin = true;
+      } else {
+        reward = -5;
+      }
+    } else {
+      if (player.role === 'civilian') {
+        reward = 15;
+        didWin = true;
+      } else {
+        reward = -5;
+      }
+    }
+
+    await addReward(player.userId, reward, 'GAME_RESULT', `Kết quả trận đấu: ${winnerRole} thắng`, true);
+    
+    // Update UserStats
+    let stats = await UserStats.findOne({ userId: player.userId });
+    if (!stats) stats = new UserStats({ userId: player.userId });
+    
+    stats.totalGames += 1;
+    if (didWin) {
+      if (player.role === 'civilian') stats.winsCivilian += 1;
+      else if (player.role === 'SPY') stats.winsSpy += 1;
+      else if (player.role === 'INFECTED') stats.winsInfected += 1;
+    }
+    if (player.role === 'SPY') stats.timesAsSpy += 1;
+    if (player.role === 'INFECTED') stats.timesInfected += 1;
+    await stats.save();
+
+    // Update MatchPlayer
+    await MatchPlayer.updateOne(
+      { matchId: session.matchId, userId: player.userId },
+      { didWin, score: reward }
+    );
+  }
+};
+
+/** AI Logic */
+const autoRoleCheckForAi = async (session) => {
+  const ai = session.players.find(p => p.isAi && p.isAlive);
+  if (ai) {
+    await module.exports.submitRoleGuess(session.matchId, ai.userId, 'civilian');
+  }
+};
+
+const autoDescribeForAi = async (session) => {
+  const ai = session.players.find(p => p.isAi && p.isAlive);
+  if (ai && !session.descriptions[session.currentRound][ai.userId]) {
+    const content = await getAiDescription(session.civilianKeyword, session.currentRound);
+    await module.exports.submitDescription(session.matchId, ai.userId, content);
+  }
+};
+
+const autoDiscussForAi = async (session) => {
+  if (session.aiDiscussUsedThisRound) return;
+  const ai = session.players.find(p => p.isAi && p.isAlive);
+  if (ai) {
+    const content = await getAiDescription(session.civilianKeyword, session.currentRound);
+    const name = getAnonymousName(ai);
+    emitToTopic(`/topic/match/${session.matchId}/chat`, {
+      sender_id: ai.userId,
+      sender_name: name,
+      content,
+      timestamp: Date.now()
+    });
+    session.aiDiscussUsedThisRound = true;
+  }
 };
 
 const getSession = (matchId) => gameSessions.get(matchId.toString());
 
 const getAnonymousName = (player) => {
+  const map = {
+    red: 'Mèo Béo', blue: 'Cún Con', green: 'Gấu Trúc',
+    yellow: 'Vịt Vàng', purple: 'Cáo Nhỏ', orange: 'Hổ Con',
+    pink: 'Thỏ Ngọc', cyan: 'Chim Cánh Cụt', brown: 'Sóc Chuột',
+    gray: 'Voi Con', white: 'Ngựa Vằn', black: 'Cá Heo'
+  };
   if (player.isAi) return 'AI KeywordSpy';
-  return `Người chơi ${player.color.charAt(0).toUpperCase() + player.color.slice(1)}`;
+  return map[player.color] || 'Người chơi ' + player.color;
 };
 
 const getAlivePlayer = (session, userId) => {
@@ -230,10 +478,34 @@ const getAlivePlayer = (session, userId) => {
   return player;
 };
 
+const handlePlayerQuit = async (roomId, userId) => {
+  for (const [matchId, session] of gameSessions.entries()) {
+    if (session.roomId.toString() === roomId.toString()) {
+      const player = session.players.find(p => p.userId === userId.toString());
+      if (player && player.isAlive) {
+        player.isAlive = false;
+        await MatchPlayer.updateOne(
+          { matchId: session.matchId, userId: userId },
+          { isAlive: false, afk: true }
+        );
+        emitToTopic(`/topic/match/${session.matchId}`, {
+          type: 'PLAYER_AFK',
+          user_id: userId,
+          display_name: player.displayName
+        });
+        // Có thể cần checkWinCondition ngay lập tức
+        await checkWinCondition(session);
+      }
+      break;
+    }
+  }
+};
+
 module.exports = {
   startGame,
   getSession,
   getAnonymousName,
+  handlePlayerQuit,
   submitDescription: async (matchId, userId, content) => {
     const session = getSession(matchId);
     if (!session || session.state !== 'DESCRIBING') throw new Error('Không phải lúc mô tả');
@@ -248,7 +520,6 @@ module.exports = {
     }
     session.descriptions[session.currentRound][userId] = content;
 
-    // Broadcast cho match (Java dùng /topic/match/{matchId}/descriptions)
     const descriptions = Object.entries(session.descriptions[session.currentRound]).map(([uid, c]) => ({
       user_id: uid,
       content: c
@@ -258,6 +529,9 @@ module.exports = {
       descriptions,
       all_submitted: descriptions.length >= session.players.filter(p => p.isAlive).length
     });
+
+    // AI auto describe after any human submits
+    await autoDescribeForAi(session);
   },
   submitChat: async (matchId, userId, content) => {
     const session = getSession(matchId);
@@ -266,13 +540,15 @@ module.exports = {
     const player = getAlivePlayer(session, userId);
     const name = getAnonymousName(player);
 
-    // Broadcast tới topic chat của match (Java dùng /topic/match/{matchId}/chat)
     emitToTopic(`/topic/match/${matchId}/chat`, {
       sender_id: userId,
       sender_name: name,
       content: content,
       timestamp: Date.now()
     });
+
+    // AI auto discuss
+    await autoDiscussForAi(session);
   },
   submitVote: async (matchId, voterId, targetId) => {
     const session = getSession(matchId);
@@ -285,7 +561,6 @@ module.exports = {
     }
     session.votes[session.currentRound][voterId] = targetId;
 
-    // Broadcast vote counts tới topic votes của match (Java dùng /topic/match/{matchId}/votes)
     const voteCounts = {};
     Object.values(session.votes[session.currentRound]).forEach(tid => {
       voteCounts[tid] = (voteCounts[tid] || 0) + 1;
@@ -305,11 +580,10 @@ module.exports = {
 
     session.roleCheckResults[userId] = correct;
 
-    // Gửi kết quả riêng cho user (Java dùng /user/queue/role-check-result)
     emitToUser(userId, 'role-check-result', {
       correct,
       actual_role: isSpy ? 'SPY' : 'CIVILIAN',
-      reward_coins: correct ? 10 : 0, // Mock reward
+      reward_coins: correct ? 10 : 0,
       abilities_available: (isSpy && correct) ? ['FAKE_MESSAGE', 'INFECT'] : [],
       acknowledged: false
     });
@@ -326,7 +600,6 @@ module.exports = {
 
     session.selectedAbility = abilityType;
     
-    // Gửi xác nhận kỹ năng riêng cho user (Java dùng /user/queue/ability-result)
     emitToUser(userId, 'ability-result', {
       success: true,
       confirmed_ability: abilityType,
@@ -347,7 +620,6 @@ module.exports = {
       throw new Error('Không thể dùng kỹ năng trong giai đoạn này');
     }
 
-    // Broadcast fake message (Java dùng /topic/match/{matchId}/chat)
     emitToTopic(`/topic/match/${matchId}/chat`, {
       sender_id: 'system',
       sender_name: 'Ẩn danh',
@@ -374,14 +646,12 @@ module.exports = {
     target.role = 'INFECTED';
     session.infectedUserId = targetUserId;
 
-    // Gửi thông báo lây nhiễm riêng cho mục tiêu (Java dùng /user/queue/infection)
     emitToUser(targetUserId, 'infection', {
       type: 'INFECTED',
       spy_keyword: session.spyKeyword,
       message: 'Bạn đã bị Gián điệp lây nhiễm! Hãy giúp Gián điệp chiến thắng.'
     });
 
-    // Gửi xác nhận cho Spy (Java dùng /user/queue/ability-result)
     emitToUser(userId, 'ability-result', {
       success: true,
       type: 'INFECT',
@@ -393,16 +663,11 @@ module.exports = {
   adminSetSpy: async (roomId, adminId, targetUserId) => {
     const room = await Room.findById(roomId);
     if (!room) throw new Error('Không tìm thấy phòng');
-    
-    // Kiểm tra quyền admin (hoặc chủ phòng tùy logic)
-    // Ở đây tạm thời lưu vào room model
     room.adminSelectedSpyId = targetUserId;
     await room.save();
-    
     return { success: true };
   },
   adjustRewards: async (matchId, adminId, civilian, spy, infected) => {
-    // Logic điều chỉnh phần thưởng cho trận đấu
     return { success: true };
   },
   setGameState: async (matchId, state) => {
@@ -412,7 +677,8 @@ module.exports = {
     session.state = state;
     session.phaseStartTime = Date.now();
     
-    emitToRoom(session.roomId, 'PHASE_UPDATE', {
+    emitToTopic(`/topic/match/${matchId}`, {
+      type: 'PHASE_UPDATE',
       state: session.state,
       startTime: session.phaseStartTime,
       endTime: session.phaseEndTime,
