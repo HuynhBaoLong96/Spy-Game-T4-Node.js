@@ -48,6 +48,21 @@ const userSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  lastCheckinDate: {
+    type: Date
+  },
+  checkinStreak: {
+    type: Number,
+    default: 0
+  },
+  // ----------------------
+  // --- FORGOT PASSWORD ---
+  resetToken: {
+    type: String
+  },
+  resetTokenExpiry: {
+    type: Date
+  },
   // ----------------------
   createdAt: {
     type: Date,

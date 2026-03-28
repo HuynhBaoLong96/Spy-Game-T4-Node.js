@@ -1,4 +1,4 @@
-const { dailyCheckin, applyRelief, getLeaderboard } = require('../services/economyService');
+const { dailyCheckin, applyRelief, getLeaderboard, hasCheckedInToday } = require('../services/economyService');
 const Transaction = require('../models/Transaction');
 
 const calculateRankTier = (points) => {
@@ -16,10 +16,14 @@ const calculateRankTier = (points) => {
 const getBalance = async (req, res, next) => {
   try {
     const user = req.user;
+    const hasCheckedIn = await hasCheckedInToday(user._id);
+    
     res.json({
       balance: user.balance,
       ranking_points: user.rankingPoints,
-      rank_tier: calculateRankTier(user.rankingPoints)
+      rank_tier: calculateRankTier(user.rankingPoints),
+      has_checked_in: hasCheckedIn,
+      checkin_streak: user.checkinStreak || 0
     });
   } catch (error) {
     next(error);
@@ -32,8 +36,12 @@ const getBalance = async (req, res, next) => {
  */
 const dailyCheckinController = async (req, res, next) => {
   try {
-    await dailyCheckin(req.user._id);
-    res.json({ message: 'Điểm danh thành công! +200 xu' });
+    const result = await dailyCheckin(req.user._id);
+    res.json({ 
+      message: `Điểm danh thành công! +${result.amount} xu`,
+      amount: result.amount,
+      streak: result.streak
+    });
   } catch (error) {
     next(error);
   }
@@ -58,14 +66,9 @@ const getReliefController = async (req, res, next) => {
  */
 const getLeaderboardController = async (req, res, next) => {
   try {
-    const topUsers = await getLeaderboard();
-    const response = topUsers.map(u => ({
-      username: u.username,
-      display_name: u.displayName || u.username,
-      ranking_points: u.rankingPoints,
-      rank_tier: calculateRankTier(u.rankingPoints)
-    }));
-    res.json(response);
+    const { type } = req.query; // 'balance', 'spy', 'civilian'
+    const leaderboard = await getLeaderboard(type);
+    res.json(leaderboard);
   } catch (error) {
     next(error);
   }

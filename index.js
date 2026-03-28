@@ -39,6 +39,7 @@ const gameRoutes = require('./routes/game');
 const economyRoutes = require('./routes/economy');
 const userRoutes = require('./routes/user');
 const keywordRoutes = require('./routes/keyword');
+const matchRoutes = require('./routes/match');
 
 // Gắn các routes vào ứng dụng
 app.use('/api/health', healthRoutes);
@@ -48,6 +49,7 @@ app.use('/api/game', gameRoutes);
 app.use('/api/economy', economyRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/keywords', keywordRoutes);
+app.use('/api/matches', matchRoutes);
 
 // Endpoint mặc định
 app.get('/', (req, res) => {

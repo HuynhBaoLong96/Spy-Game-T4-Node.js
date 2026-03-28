@@ -22,8 +22,8 @@ const startGame = async (roomId, hostUserId) => {
   if (room.hostId.toString() !== hostUserId) throw new Error('Chỉ chủ phòng mới có thể bắt đầu game');
   if (room.currentPlayers < 2) throw new Error('Cần ít nhất 2 người chơi để bắt đầu');
 
-  // 1. Thu phí vào cửa
-  const entryFee = 10;
+  // 1. Thu phí vào cửa (0 xu theo bản cập nhật Java mới nhất)
+  const entryFee = 0;
   const roomPlayers = await RoomPlayer.find({ roomId });
   for (const rp of roomPlayers) {
     await deductEntryFee(rp.userId, entryFee);
@@ -42,8 +42,9 @@ const startGame = async (roomId, hostUserId) => {
 
   // 4. Khởi tạo GameSession trong bộ nhớ
   const session = {
-    matchId: match._id,
+    matchId: match._id.toString(),
     roomId,
+    roomCode: room.roomCode,
     civilianKeyword: keywordPair.civilianKeyword,
     spyKeyword: keywordPair.spyKeyword,
     currentRound: 1,
@@ -51,6 +52,7 @@ const startGame = async (roomId, hostUserId) => {
     players: [],
     descriptions: {}, // round -> userId -> content
     votes: {},        // round -> userId -> targetId
+    roleCheckResults: {}, // userId -> correct (boolean)
     phaseStartTime: Date.now(),
     phaseEndTime: Date.now() + 10000, // 10s xem vai
   };
@@ -188,13 +190,31 @@ const processVoteResult = async (session) => {
 
 const getSession = (matchId) => gameSessions.get(matchId.toString());
 
+const getAnonymousName = (player) => {
+  if (player.isAi) return 'AI KeywordSpy';
+  return `Người chơi ${player.color.charAt(0).toUpperCase() + player.color.slice(1)}`;
+};
+
+const getAlivePlayer = (session, userId) => {
+  const player = session.players.find(p => p.userId === userId.toString());
+  if (!player) throw new Error('Không tìm thấy người chơi');
+  if (!player.isAlive) throw new Error('Bạn đã bị loại, không thể thực hiện hành động này');
+  return player;
+};
+
 module.exports = {
   startGame,
   getSession,
+  getAnonymousName,
   submitDescription: async (matchId, userId, content) => {
     const session = getSession(matchId);
     if (!session || session.state !== 'DESCRIBING') throw new Error('Không phải lúc mô tả');
     
+    getAlivePlayer(session, userId);
+
+    const words = content.trim().split(/\s+/);
+    if (words.length < 1 || words.length > 30) throw new Error('Mô tả phải từ 1-30 từ');
+
     if (!session.descriptions[session.currentRound]) {
       session.descriptions[session.currentRound] = {};
     }
@@ -205,13 +225,28 @@ module.exports = {
       content,
       round: session.currentRound
     });
+  },
+  submitChat: async (matchId, userId, content) => {
+    const session = getSession(matchId);
+    if (!session || session.state !== 'DISCUSSING') throw new Error('Không phải lúc thảo luận');
+    
+    const player = getAlivePlayer(session, userId);
+    const name = getAnonymousName(player);
 
-    // AI tự động mô tả nếu đến lượt
-    // ...
+    emitToRoom(session.roomId, 'CHAT_MESSAGE', {
+      user_id: userId,
+      display_name: name,
+      color: player.color,
+      content,
+      sender: name,
+      sent_at: new Date().toISOString()
+    });
   },
   submitVote: async (matchId, voterId, targetId) => {
     const session = getSession(matchId);
     if (!session || session.state !== 'VOTING') return;
+
+    getAlivePlayer(session, voterId);
 
     if (!session.votes[session.currentRound]) {
       session.votes[session.currentRound] = {};
@@ -223,5 +258,21 @@ module.exports = {
       targetId,
       round: session.currentRound
     });
+  },
+  submitRoleGuess: async (matchId, userId, guessedRole) => {
+    const session = getSession(matchId);
+    if (!session || session.state !== 'ROLE_CHECK') throw new Error('Không phải lúc đoán vai');
+    
+    getAlivePlayer(session, userId);
+    
+    const isSpy = userId.toString() === session.spyUserId;
+    const guessedSpy = guessedRole.toLowerCase() === 'spy';
+    const correct = (isSpy && guessedSpy) || (!isSpy && !guessedSpy);
+
+    session.roleCheckResults[userId] = correct;
+
+    // Nếu tất cả đã đoán (hoặc là logic tương đương)
+    // Ở đây tạm thời trả về kết quả
+    return { correct };
   }
 };

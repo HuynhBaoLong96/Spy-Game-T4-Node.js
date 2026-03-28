@@ -1,4 +1,4 @@
-const { startGame, getSession, submitDescription, submitVote } = require('../services/gameService');
+const { startGame, getSession, submitDescription, submitVote, submitChat, submitRoleGuess } = require('../services/gameService');
 
 /**
  * @desc    Bắt đầu game
@@ -41,6 +41,7 @@ const getGameStateController = async (req, res, next) => {
     res.json({
       match_id: session.matchId,
       room_id: session.roomId,
+      room_code: session.roomCode,
       state: session.state,
       current_round: session.currentRound,
       phase_start_time: session.phaseStartTime,
@@ -56,6 +57,42 @@ const getGameStateController = async (req, res, next) => {
       })),
       my_keyword: player && player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Gửi tin nhắn chat
+ * @route   POST /api/game/:matchId/chat
+ */
+const submitChatController = async (req, res, next) => {
+  try {
+    const { matchId } = req.params;
+    const { content } = req.body;
+    const user = req.user;
+
+    await submitChat(matchId, user._id, content);
+
+    res.json({ submitted: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Đoán vai trò
+ * @route   POST /api/game/:matchId/guess-role
+ */
+const submitRoleGuessController = async (req, res, next) => {
+  try {
+    const { matchId } = req.params;
+    const { guessed_role } = req.body;
+    const user = req.user;
+
+    const result = await submitRoleGuess(matchId, user._id, guessed_role);
+
+    res.json(result);
   } catch (error) {
     next(error);
   }
@@ -103,6 +140,8 @@ const submitVoteController = async (req, res, next) => {
 module.exports = {
   startGame: startGameController,
   getGameState: getGameStateController,
+  submitChat: submitChatController,
+  submitRoleGuess: submitRoleGuessController,
   submitDescription: submitDescriptionController,
   submitVote: submitVoteController,
 };
