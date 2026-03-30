@@ -29,7 +29,7 @@ Tạo một file `.env` tại thư mục gốc của dự án và cấu hình c�
 
 ```env
 # Cổng chạy server
-PORT=8081
+PORT=8080
 
 # Chuỗi kết nối MongoDB
 MONGODB_URI=mongodb://localhost:27017/spy-game

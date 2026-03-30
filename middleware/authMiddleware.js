@@ -24,21 +24,18 @@ const protect = async (req, res, next) => {
       req.user = await User.findById(decoded.id).select('-passwordHash');
 
       if (!req.user) {
-        res.status(401);
-        throw new Error('Người dùng không tồn tại');
+        return res.status(401).json({ message: 'Người dùng không tồn tại' });
       }
 
       next();
     } catch (error) {
       console.error(error);
-      res.status(401);
-      throw new Error('Không được phép, token không hợp lệ');
+      return res.status(401).json({ message: 'Không được phép, token không hợp lệ' });
     }
   }
 
   if (!token) {
-    res.status(401);
-    throw new Error('Không được phép, không tìm thấy token');
+    return res.status(401).json({ message: 'Không được phép, không tìm thấy token' });
   }
 };
 
@@ -47,10 +44,11 @@ const protect = async (req, res, next) => {
  */
 const admin = (req, res, next) => {
   if (req.user && req.user.role === 'ROLE_ADMIN') {
-    next();
+    if (typeof next === 'function') {
+      next();
+    }
   } else {
-    res.status(403);
-    throw new Error('Không có quyền Admin');
+    return res.status(403).json({ message: 'Không có quyền Admin' });
   }
 };
 

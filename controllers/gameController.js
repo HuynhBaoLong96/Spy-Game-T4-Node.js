@@ -6,17 +6,36 @@ const { startGame, getSession, submitDescription, submitVote, submitChat, submit
  */
 const startGameController = async (req, res, next) => {
   try {
-    const { roomId } = req.params;
+    // Thêm log chi tiết để debug
+    console.log('[DEBUG] startGameController request:', {
+      params: req.params,
+      body: req.body,
+      user: req.user ? req.user._id : 'no-user'
+    });
+
+    // FE gửi room_id trong body hoặc params
+    const roomId = (req.body && req.body.room_id) || (req.params && req.params.roomId);
     const user = req.user;
 
-    const session = await startGame(roomId, user._id);
+    if (!roomId) {
+      return res.status(400).json({ message: 'Thiếu thông tin room_id' });
+    }
 
-    res.json({
+    // Đảm bảo roomId là string
+    const actualRoomId = roomId.toString();
+
+    const session = await startGame(actualRoomId, user._id.toString());
+
+    return res.json({
       match_id: session.matchId,
       message: 'Game đã bắt đầu'
     });
   } catch (error) {
-    next(error);
+    console.error('[DEBUG] startGameController error:', error.message);
+    if (typeof next === 'function') {
+      return next(error);
+    }
+    return res.status(500).json({ message: error.message });
   }
 };
 
@@ -55,25 +74,31 @@ const getGameStateController = async (req, res, next) => {
 
     // Trả về state phù hợp với người dùng
     const player = session.players.find(p => p.userId === user._id.toString());
+    const isAnonymizedPhase = ['DISCUSSING', 'VOTING'].includes(session.state.toUpperCase());
     
     res.json({
       match_id: session.matchId,
       room_id: session.roomId,
       room_code: session.roomCode,
-      state: session.state,
+      phase: session.state.toUpperCase(),
+      state: session.state.toUpperCase(),
       current_round: session.currentRound,
+      current_turn_user_id: session.currentTurnUserId,
       phase_start_time: session.phaseStartTime,
       phase_end_time: session.phaseEndTime,
+      remaining_seconds: Math.max(0, Math.floor((session.phaseEndTime - Date.now()) / 1000)),
       players: session.players.map(p => ({
         user_id: p.userId,
-        username: p.username,
-        display_name: p.displayName,
-        color: p.color,
+        username: isAnonymizedPhase ? 'ĐANG GIẤU MẶT 🎭' : p.username,
+        display_name: isAnonymizedPhase ? 'ĐANG GIẤU MẶT 🎭' : p.displayName,
+        color: isAnonymizedPhase ? 'gray' : p.color,
         is_alive: p.isAlive,
         is_ai: p.isAi,
         role: p.userId === user._id.toString() ? p.role : 'hidden'
       })),
-      my_keyword: player && player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword
+      my_keyword: player && player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
+      your_keyword: player && player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
+      your_role: player && player.role ? player.role.toUpperCase() : 'UNKNOWN'
     });
   } catch (error) {
     next(error);

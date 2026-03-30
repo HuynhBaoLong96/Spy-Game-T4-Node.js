@@ -50,8 +50,9 @@ const joinRoom = async (roomCode, userId) => {
   if (!user) throw new Error('Không tìm thấy người dùng');
 
   let roomPlayer = await RoomPlayer.findOne({ roomId: room._id, userId });
-  
-  if (!roomPlayer) {
+  const isNewPlayer = !roomPlayer;
+
+  if (isNewPlayer) {
     roomPlayer = await RoomPlayer.create({
       roomId: room._id,
       userId,
@@ -59,11 +60,22 @@ const joinRoom = async (roomCode, userId) => {
       displayName: user.displayName || user.username
     });
 
-    room.currentPlayers += 1;
+    // Cập nhật số lượng người chơi thực tế
+    room.currentPlayers = await RoomPlayer.countDocuments({ roomId: room._id });
     await room.save();
+
+    // Thông báo ngay lập tức cho mọi người trong phòng: có người mới vào
+    emitToRoom(room, 'PLAYER_JOIN', {
+      type: 'PLAYER_JOIN',
+      user_id: userId.toString(),
+      display_name: user.displayName || user.username,
+      username: user.username,
+      current_players: room.currentPlayers,
+      max_players: room.maxPlayers
+    });
   }
 
-  // Broadcast cập nhật
+  // Broadcast cập nhật đầy đủ danh sách
   broadcastRoomUpdate(room);
   broadcastLobbyRoomEvent(room, 'UPDATED');
 
@@ -77,16 +89,27 @@ const leaveRoom = async (roomId, userId) => {
   const room = await Room.findById(roomId);
   if (!room) throw new Error('Không tìm thấy phòng');
 
-  await RoomPlayer.deleteOne({ roomId, userId });
-  room.currentPlayers = Math.max(0, room.currentPlayers - 1);
+  const leavingPlayer = await RoomPlayer.findOne({ roomId, userId });
+  if (!leavingPlayer) return; // Đã rời rồi hoặc không có trong phòng
 
-  if (room.currentPlayers <= 0) {
+  await RoomPlayer.deleteOne({ roomId, userId });
+  
+  // Đếm lại số lượng người chơi thực tế để tránh lệch dữ liệu
+  const playerCount = await RoomPlayer.countDocuments({ roomId });
+  room.currentPlayers = playerCount;
+
+  if (playerCount <= 0) {
+    // Phòng trống — thông báo trước khi xóa
+    emitToRoom(room, 'ROOM_CLOSED', {
+      type: 'ROOM_CLOSED',
+      room_id: roomId.toString()
+    });
     await Room.findByIdAndDelete(roomId);
     broadcastLobbyRoomEvent(room, 'DELETED');
     return;
   }
 
-  if (room.hostId.toString() === userId) {
+  if (room.hostId.toString() === userId.toString()) {
     const remaining = await RoomPlayer.find({ roomId }).sort({ joinedAt: 1 });
     if (remaining.length > 0) {
       room.hostId = remaining[0].userId;
@@ -94,6 +117,17 @@ const leaveRoom = async (roomId, userId) => {
   }
 
   await room.save();
+
+  // Thông báo ngay: có người rời phòng
+  emitToRoom(room, 'PLAYER_LEAVE', {
+    type: 'PLAYER_LEAVE',
+    user_id: userId.toString(),
+    display_name: leavingPlayer ? leavingPlayer.displayName : 'Unknown',
+    new_host_id: room.hostId.toString(),
+    current_players: room.currentPlayers,
+    max_players: room.maxPlayers
+  });
+
   broadcastRoomUpdate(room);
   broadcastLobbyRoomEvent(room, 'UPDATED');
 };
@@ -115,14 +149,22 @@ const kickPlayer = async (roomId, adminId, targetUserId) => {
     throw new Error('Không thể đuổi chủ phòng');
   }
 
+  const kickedPlayer = await RoomPlayer.findOne({ roomId, userId: targetUserId });
+  if (!kickedPlayer) return;
+
   await RoomPlayer.deleteOne({ roomId, userId: targetUserId });
-  room.currentPlayers = Math.max(0, room.currentPlayers - 1);
+  
+  // Cập nhật số lượng người chơi thực tế
+  room.currentPlayers = await RoomPlayer.countDocuments({ roomId });
   await room.save();
 
-  // Gửi thông báo cho người bị đuổi
-  emitToRoom(roomId, 'PLAYER_KICKED', {
-    user_id: targetUserId,
-    room_id: roomId
+  // Thông báo ngay cho tất cả trong phòng
+  emitToRoom(room, 'PLAYER_KICKED', {
+    type: 'PLAYER_KICKED',
+    user_id: targetUserId.toString(),
+    display_name: kickedPlayer ? kickedPlayer.displayName : 'Unknown',
+    current_players: room.currentPlayers,
+    max_players: room.maxPlayers
   });
 
   broadcastRoomUpdate(room);
@@ -155,17 +197,30 @@ const transferHost = async (roomId, currentHostId, newHostId) => {
 
 const broadcastRoomUpdate = async (room) => {
   const players = await RoomPlayer.find({ roomId: room._id });
-  emitToRoom(room._id, 'ROOM_UPDATED', {
-    room,
-    players
+  emitToRoom(room, 'ROOM_UPDATE', {
+    type: 'ROOM_UPDATE',
+    room_id: room._id.toString(),
+    room_code: room.roomCode,
+    host_id: room.hostId.toString(),
+    current_players: room.currentPlayers,
+    max_players: room.maxPlayers,
+    status: room.status,
+    is_private: room.isPrivate,
+    players: players.map(p => ({
+      user_id: p.userId.toString(),
+      display_name: p.displayName,
+      username: p.username
+    }))
   });
 };
 
 const broadcastLobbyRoomEvent = (room, eventType) => {
+  if (!room) return;
+  
   // Java FE mong đợi cấu trúc: { type, room_id, room_code, current_players, max_players, status, is_private }
   emitToLobby('LOBBY_ROOM_EVENT', {
     type: eventType === 'DELETED' ? 'ROOM_DELETED' : 'ROOM_UPDATED',
-    room_id: room._id,
+    room_id: room._id ? room._id.toString() : null,
     room_code: room.roomCode,
     current_players: room.currentPlayers,
     max_players: room.maxPlayers,
@@ -183,8 +238,11 @@ module.exports = {
   broadcastRoomUpdate,
   broadcastLobbyRoomEvent,
   voteByRoom: async (roomId, voterId, targetId) => {
+    const room = await Room.findById(roomId);
+    if (!room) return { success: false };
+    
     // Tạm thời emit socket cho đơn giản
-    emitToRoom(roomId, 'ROOM_VOTE', {
+    emitToRoom(room, 'ROOM_VOTE', {
       voter_id: voterId,
       target_id: targetId
     });
@@ -203,15 +261,22 @@ module.exports = {
     return [];
   },
   sendRoomMessage: async (roomId, userId, content) => {
+    const room = await Room.findById(roomId);
+    if (!room) throw new Error('Không tìm thấy phòng');
+
     const user = await User.findById(userId);
     const message = {
+      type: 'CHAT',
       user_id: userId,
+      userId: userId,
+      sender: user ? (user.displayName || user.username) : 'Unknown',
+      sender_name: user ? (user.displayName || user.username) : 'Unknown',
       display_name: user ? (user.displayName || user.username) : 'Unknown',
       content,
-      sent_at: new Date().toISOString()
+      timestamp: new Date().toISOString()
     };
     
-    emitToRoom(roomId, 'ROOM_MESSAGE', message);
+    emitToRoom(room, 'CHAT', message);
     return message;
   }
 };
