@@ -4,10 +4,13 @@
  */
 const isAdmin = (req, res, next) => {
   if (req.user && req.user.role === 'ROLE_ADMIN') {
-    next();
+    if (typeof next === 'function') {
+      next();
+    }
   } else {
-    res.status(403);
-    throw new Error('Bạn không có quyền truy cập vào chức năng dành cho Admin');
+    return res.status(403).json({ 
+      message: 'Bạn không có quyền truy cập vào chức năng dành cho Admin' 
+    });
   }
 };
 

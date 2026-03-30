@@ -1,12 +1,15 @@
 const express = require('express');
 const router = express.Router();
 
-// Nhập hàm xử lý logic từ controller
 const { healthCheck } = require('../controllers/healthController');
+const socketService = require('../services/socketService');
 
-// Khi có một yêu cầu GET đến đường dẫn gốc ('/') của router này,
-// hãy gọi hàm healthCheck
 router.get('/', healthCheck);
 
-// Xuất router này ra để index.js có thể dùng
+// Debug: xem tất cả WS sessions + subscriptions đang active
+// GET /api/health/sockets
+router.get('/sockets', (req, res) => {
+  res.json(socketService.getDebugInfo());
+});
+
 module.exports = router;
