@@ -26,7 +26,7 @@ const refresh = async (req, res, next) => {
     const accessToken = generateAccessToken(user);
 
     res.json({
-      user_id: user._id,
+      user_id: user._id.toString(),
       username: user.username,
       display_name: user.displayName,
       avatar_url: user.avatarUrl,
@@ -49,7 +49,7 @@ const getMe = async (req, res, next) => {
   try {
     const user = req.user;
     res.json({
-      user_id: user._id,
+      user_id: user._id.toString(),
       username: user.username,
       display_name: user.displayName,
       avatar_url: user.avatarUrl,
@@ -102,7 +102,7 @@ const register = async (req, res, next) => {
 
     // Trả về cấu trúc JSON y hệt backend Java
     res.status(201).json({
-      user_id: user._id,
+      user_id: user._id.toString(),
       username: user.username,
       display_name: user.displayName,
       avatar_url: user.avatarUrl,
@@ -139,7 +139,7 @@ const login = async (req, res, next) => {
       const refreshToken = generateRefreshToken(user);
 
       res.json({
-        user_id: user._id,
+        user_id: user._id.toString(),
         username: user.username,
         display_name: user.displayName,
         avatar_url: user.avatarUrl,

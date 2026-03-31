@@ -1,6 +1,12 @@
 // Tải các biến môi trường từ tệp .env vào process.env
 require('dotenv').config();
 
+// Đảm bảo mỗi lần restart server sẽ có một JWT_SECRET mới nếu không được cấu hình cố định
+// Điều này giúp ngăn chặn việc tự động đăng nhập từ các session cũ khi restart bài test
+if (!process.env.JWT_SECRET_FIXED) {
+  process.env.JWT_SECRET = process.env.JWT_SECRET + Math.random().toString(36).substring(7);
+}
+
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -22,11 +28,21 @@ const server = http.createServer(app);
 // Khởi tạo socketService với STOMP broker
 socketService.init(server);
 
-const port = process.env.PORT || 8081;
+const port = process.env.PORT || 8080;
 
 // Middlewares tiêu chuẩn
 app.use(logger); // Ghi log mọi request
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://localhost:3000',
+    'http://localhost:8080',
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'ngrok-skip-browser-warning'],
+  credentials: true,
+}));
 app.use(apiLimiter); // Giới hạn tần suất chung
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
@@ -40,6 +56,8 @@ const economyRoutes = require('./routes/economy');
 const userRoutes = require('./routes/user');
 const keywordRoutes = require('./routes/keyword');
 const matchRoutes = require('./routes/match');
+const shopRoutes = require('./routes/shop');
+const skillRoutes = require('./routes/skill');
 
 // Gắn các routes vào ứng dụng
 app.use('/api/health', healthRoutes);
@@ -50,6 +68,8 @@ app.use('/api/economy', economyRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/keywords', keywordRoutes);
 app.use('/api/matches', matchRoutes);
+app.use('/api/shop', shopRoutes);
+app.use('/api/skill', skillRoutes);
 
 // Endpoint mặc định
 app.get('/', (req, res) => {

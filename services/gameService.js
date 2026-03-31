@@ -71,10 +71,11 @@ const startGame = async (roomIdOrCode, hostUserId) => {
     currentRound: 1,
     state: 'ROLE_ASSIGN',
     players: [],
-    descriptions: {}, // round -> userId -> content
-    votes: {},        // round -> userId -> targetId
+    descriptions: { 1: {} }, // round -> userId -> content (khởi tạo sẵn round 1)
+    votes: { 1: {} },        // round -> userId -> targetId (khởi tạo sẵn round 1)
     roleCheckResults: {}, // userId -> correct (boolean)
     roleCheckDone: false,
+    aiDiscussUsedThisRound: false,
     phaseStartTime: Date.now(),
     phaseEndTime: Date.now() + (PHASE_DURATIONS.ROLE_ASSIGN * 1000),
     currentTurnUserId: null,
@@ -112,11 +113,16 @@ const startGame = async (roomIdOrCode, hostUserId) => {
 
   // 6. Chọn Spy ngẫu nhiên (chỉ chọn từ Human)
   const humans = players.filter(p => !p.isAi);
-  const spyPlayer = humans[Math.floor(Math.random() * humans.length)];
-  spyPlayer.role = 'SPY';
-  session.spyUserId = spyPlayer.userId;
+  if (humans.length > 0) {
+    const spyIndex = Math.floor(Math.random() * humans.length);
+    humans[spyIndex].role = 'SPY';
+    session.spyUserId = humans[spyIndex].userId;
+    console.log(`[DEBUG] Selected Spy: ${humans[spyIndex].username} (${humans[spyIndex].userId})`);
+  } else {
+    console.error('[ERROR] No humans found to assign Spy!');
+  }
 
-  // Đảm bảo tất cả role của human là 'CIVILIAN' (viết hoa) để đồng bộ với enum DB
+  // Đảm bảo tất cả role của human là 'CIVILIAN' (viết hoa) nếu không phải SPY
   humans.forEach(p => {
     if (p.role !== 'SPY') p.role = 'CIVILIAN';
   });
@@ -125,7 +131,7 @@ const startGame = async (roomIdOrCode, hostUserId) => {
   gameSessions.set(match._id.toString(), session);
 
   // 7. Cập nhật Match với Spy ID
-  match.spyUserId = spyPlayer.userId;
+  match.spyUserId = session.spyUserId;
   await match.save();
 
   // 8. Lưu MatchPlayer vào DB
@@ -151,7 +157,8 @@ const startGame = async (roomIdOrCode, hostUserId) => {
   emitToRoom(room, 'GAME_START', {
     type: 'GAME_START',
     room_id: roomId,
-    match_id: match._id
+    match_id: match._id.toString(),
+    matchId: match._id.toString()
   });
 
   // Chuyển sang phase ROLE_ASSIGN
@@ -196,7 +203,6 @@ const broadcastRoles = (session) => {
     state: 'ROLE_ASSIGN',
     remaining_seconds: PHASE_DURATIONS.ROLE_ASSIGN,
     match_id: session.matchId,
-    state: session.state,
     players: session.players.map(p => ({
       user_id: p.userId,
       username: p.username,
@@ -253,10 +259,15 @@ const startPhaseTimer = (session, durationMs, nextPhaseFn) => {
 
   if (session.timerId) clearTimeout(session.timerId);
   
-  session.timerId = setTimeout(() => {
-    const currentSession = gameSessions.get(session.matchId.toString());
-    if (currentSession && currentSession.state === session.state) {
-      nextPhaseFn(currentSession);
+  session.timerId = setTimeout(async () => {
+    try {
+      const currentSession = gameSessions.get(session.matchId.toString());
+      if (currentSession && currentSession.state === session.state) {
+        await nextPhaseFn(currentSession);
+      }
+    } catch (error) {
+      console.error(`[ERROR] Lỗi trong phase ${session.state}:`, error);
+      // Có thể thêm thông báo lỗi cho người chơi hoặc đóng session
     }
   }, durationMs);
 };
@@ -266,6 +277,14 @@ const moveToDescribing = (session) => {
   session.currentTurnUserId = null; // Không dùng lượt miêu tả
   
   startPhaseTimer(session, PHASE_DURATIONS.DESCRIBING * 1000, moveToDiscussing);
+
+  // Thông báo chuyển phase cho FE (Round1Enter subscribe /topic/room/:roomId/state)
+  emitToTopic(`/topic/room/${session.roomId}/state`, {
+    type: 'PHASE_UPDATE',
+    state: 'DESCRIBING',
+    match_id: session.matchId,
+    room_id: session.roomId
+  });
 
   // AI tự động miêu tả sau 5-10 giây
   setTimeout(() => {
@@ -314,11 +333,13 @@ const eliminatePlayer = async (session, userId) => {
   const player = session.players.find(p => p.userId === userId);
   if (player) {
     player.isAlive = false;
-    // Cập nhật MatchPlayer trong DB
-    await MatchPlayer.updateOne(
-      { matchId: session.matchId, userId: userId },
-      { isAlive: false, eliminatedRound: session.currentRound }
-    );
+    // Chỉ cập nhật MatchPlayer trong DB nếu không phải AI (vì AI không có trong MatchPlayer table)
+    if (!player.isAi) {
+      await MatchPlayer.updateOne(
+        { matchId: session.matchId, userId: userId },
+        { isAlive: false, eliminatedRound: session.currentRound }
+      );
+    }
   }
 
   session.state = 'ROUND_RESULT';
@@ -352,6 +373,14 @@ const eliminatePlayer = async (session, userId) => {
     }
   });
 
+  // Gửi thông báo chuyển phase để FE nhận diện được ROUND_RESULT
+  emitToTopic(`/topic/match/${session.matchId}`, {
+    type: 'PHASE_UPDATE',
+    phase: 'ROUND_RESULT',
+    state: 'ROUND_RESULT',
+    remaining_seconds: PHASE_DURATIONS.ROUND_RESULT
+  });
+
   startPhaseTimer(session, PHASE_DURATIONS.ROUND_RESULT * 1000, checkWinCondition);
 };
 
@@ -371,31 +400,42 @@ const moveToVoteTie = (session) => {
   emitToTopic(`/topic/match/${session.matchId}/round-result`, tieMsg);
   emitToTopic(`/topic/match/${session.matchId}`, tieMsg);
 
+  // Gửi thông báo chuyển phase để FE nhận diện được VOTE_TIE
+  emitToTopic(`/topic/match/${session.matchId}`, {
+    type: 'PHASE_UPDATE',
+    phase: 'VOTE_TIE',
+    state: 'VOTE_TIE',
+    remaining_seconds: PHASE_DURATIONS.VOTE_TIE
+  });
+
   startPhaseTimer(session, PHASE_DURATIONS.VOTE_TIE * 1000, startNextRound);
 };
 
 const checkWinCondition = async (session) => {
   const alivePlayers = session.players.filter(p => p.isAlive);
   const spyAlive = alivePlayers.some(p => p.role === 'SPY' || p.role === 'INFECTED');
+  // Đếm số Dân thường (Human) còn sống
   const civilianHumansAlive = alivePlayers.filter(p => !p.isAi && (p.role === 'CIVILIAN' || p.role === 'civilian')).length;
 
   console.log(`[DEBUG] checkWinCondition matchId=${session.matchId}: spyAlive=${spyAlive}, civiliansAlive=${civilianHumansAlive}`);
 
-  // Nếu Spy chết, cho Spy một cơ hội đoán từ khóa (ROLE_CHECK)
+  // 1. Nếu Spy bị loại -> Dân thường thắng ngay lập tức
   if (!spyAlive) {
-    const eliminatedSpy = session.players.find(p => (p.role === 'SPY' || p.role === 'INFECTED') && !p.isAlive);
-    if (eliminatedSpy && !session.roleCheckDone) {
-      return moveToSpyKeywordGuess(session, eliminatedSpy.userId);
-    }
     return moveToGameOver(session, 'civilians');
   } 
   
-  // Nếu KHÔNG CÒN dân thường (Human) nào sống, Spy thắng
-  if (civilianHumansAlive === 0) {
+  // 2. Nếu chỉ còn 1 Dân thường (Human) và 1 Spy (có thể có AI) -> Spy thắng
+  // (Theo luật: Spy thắng khi số dân thường <= số spy, ở đây là 1 vs 1)
+  if (civilianHumansAlive <= 1 && spyAlive) {
     return moveToGameOver(session, 'spy');
   } 
   
-  // Nếu chưa ai thắng, qua vòng mới
+  // 3. Nếu chưa ai thắng, kiểm tra xem có cần chạy Role Check không
+  if (session.currentRound === 1 && !session.roleCheckDone) {
+    return moveToRoleCheck(session);
+  }
+
+  // Nếu không, qua vòng mới
   await startNextRound(session);
 };
 
@@ -428,6 +468,7 @@ const moveToSpyKeywordGuess = async (session, spyUserId) => {
 const startNextRound = async (session) => {
   session.currentRound++;
   session.aiDiscussUsedThisRound = false;
+  session.aiManipulatedThisRound = false; // Reset trạng thái thao túng AI mỗi vòng
   
   // Reset descriptions và votes cho vòng mới
   session.descriptions[session.currentRound] = {};
@@ -459,6 +500,7 @@ const moveToRoleCheckResult = async (session) => {
 
 const broadcastRoleCheckResults = async (session) => {
   const aliveHumans = session.players.filter(p => p.isAlive && !p.isAi).map(p => p.userId);
+  const aiAlive = session.players.some(p => p.isAi && p.isAlive);
 
   for (const player of session.players) {
     if (player.isAi) continue;
@@ -466,11 +508,21 @@ const broadcastRoleCheckResults = async (session) => {
     const correct = session.roleCheckResults[player.userId] === true;
     const isSpy = player.userId === session.spyUserId;
     
+    // Nếu là Spy và đoán đúng, kiểm tra xem có AI không để cho chọn kỹ năng
+    const abilities = [];
+    if (isSpy && correct) {
+      if (aiAlive) {
+        abilities.push('MANIPULATE_AI'); // Giả mạo AI
+      } else {
+        abilities.push('INFECT'); // Tha hóa (nếu AI đã chết)
+      }
+    }
+
     const result = {
       correct,
       actual_role: isSpy ? 'SPY' : 'CIVILIAN',
       reward_coins: correct ? 10 : 0,
-      abilities_available: (isSpy && correct) ? ['FAKE_MESSAGE', 'INFECT'] : [],
+      abilities_available: abilities,
       alive_humans: (isSpy && correct) ? aliveHumans : [],
       acknowledged: false
     };
@@ -485,7 +537,8 @@ const broadcastRoleCheckResults = async (session) => {
 
 const onRoleCheckResultPhaseEnd = async (session) => {
   session.roleCheckDone = true;
-  moveToDescribing(session);
+  // Bắt đầu vòng mới thay vì chỉ moveToDescribing để reset descriptions
+  await startNextRound(session);
 };
 
 const moveToGameOver = async (session, winnerRole) => {
@@ -533,7 +586,7 @@ const processEndGameRewards = async (session, winnerRole) => {
         reward = -5;
       }
     } else {
-      if (player.role === 'civilian') {
+      if (player.role === 'CIVILIAN' || player.role === 'civilian') {
         reward = 15;
         didWin = true;
       } else {
@@ -575,7 +628,21 @@ const autoRoleCheckForAi = async (session) => {
 
 const autoDescribeForAi = async (session) => {
   const ai = session.players.find(p => p.isAi && p.isAlive);
-  if (ai && !session.descriptions[session.currentRound][ai.userId]) {
+  if (!ai) return;
+
+  // Nếu Spy đã chọn kỹ năng giả mạo AI và chưa dùng trong vòng này, 
+  // thì AI sẽ không tự động miêu tả mà chờ Spy miêu tả hộ.
+  if (session.selectedAbility === 'MANIPULATE_AI' && !session.aiManipulatedThisRound) {
+    console.log(`[DEBUG] AI miêu tả đang bị Spy thao túng, không tự động miêu tả.`);
+    return;
+  }
+
+  // Đảm bảo descriptions[round] đã được khởi tạo trước khi đọc
+  if (!session.descriptions[session.currentRound]) {
+    session.descriptions[session.currentRound] = {};
+  }
+
+  if (!session.descriptions[session.currentRound][ai.userId]) {
     const content = await getAiDescription(session.civilianKeyword, session.currentRound);
     await module.exports.submitDescription(session.matchId, ai.userId, content);
   }
@@ -622,10 +689,18 @@ const getAlivePlayer = (session, userId) => {
 };
 
 const handlePlayerQuit = async (roomIdOrCode, userId) => {
+  if (!roomIdOrCode || !userId) return;
   for (const [matchId, session] of gameSessions.entries()) {
     if (session.roomId.toString() === roomIdOrCode.toString() || session.roomCode === roomIdOrCode) {
       const player = session.players.find(p => p.userId === userId.toString());
       if (player && player.isAlive) {
+        // Chỉ đánh dấu AFK nếu game đang diễn ra (không phải ROLE_ASSIGN hay GAME_OVER)
+        const activePhases = ['DESCRIBING', 'DISCUSSING', 'VOTING', 'VOTE_TIE', 'ROUND_RESULT', 'ROLE_CHECK', 'ROLE_CHECK_RESULT'];
+        if (!activePhases.includes(session.state)) {
+          // Đang ở ROLE_ASSIGN hoặc phase khác - bỏ qua, player chưa chính thức vào game
+          break;
+        }
+
         player.isAlive = false;
         await MatchPlayer.updateOne(
           { matchId: session.matchId, userId: userId },
@@ -636,7 +711,6 @@ const handlePlayerQuit = async (roomIdOrCode, userId) => {
           user_id: userId,
           display_name: player.displayName
         });
-        // Có thể cần checkWinCondition ngay lập tức
         await checkWinCondition(session);
       }
       break;
@@ -714,26 +788,42 @@ module.exports = {
       timestamp: Date.now()
     });
 
-    // AI auto discuss
-    await autoDiscussForAi(session);
+    // AI auto discuss - Đã bị loại bỏ theo yêu cầu: AI không được thảo luận
+    // await autoDiscussForAi(session);
   },
   submitVote: async (matchId, voterId, targetId) => {
     const session = getSession(matchId);
     if (!session || session.state !== 'VOTING') return;
 
-    getAlivePlayer(session, voterId);
+    const voter = getAlivePlayer(session, voterId);
+    if (voter.isAi) return; // AI không vote
 
     if (!session.votes[session.currentRound]) {
       session.votes[session.currentRound] = {};
     }
-    session.votes[session.currentRound][voterId] = targetId;
+    session.votes[session.currentRound][voterId.toString()] = targetId.toString();
 
+    const currentVotes = session.votes[session.currentRound];
     const voteCounts = {};
-    Object.values(session.votes[session.currentRound]).forEach(tid => {
+    Object.values(currentVotes).forEach(tid => {
       voteCounts[tid] = (voteCounts[tid] || 0) + 1;
     });
 
+    // Thông báo cập nhật lượt vote
     emitToTopic(`/topic/match/${matchId}/votes`, voteCounts);
+
+    // Tự động chuyển phase nếu tất cả (người chơi còn sống) đã vote xong
+    const aliveHumans = session.players.filter(p => p.isAlive && !p.isAi);
+    const totalVoted = Object.keys(currentVotes).length;
+
+    if (totalVoted >= aliveHumans.length) {
+      setTimeout(() => {
+        const currentSession = gameSessions.get(matchId.toString());
+        if (currentSession && currentSession.state === 'VOTING') {
+          processVoteResult(currentSession);
+        }
+      }, 2000);
+    }
   },
   submitRoleGuess: async (matchId, userId, guessedKeyword) => {
     const session = getSession(matchId);
@@ -822,6 +912,44 @@ module.exports = {
       message: `Bạn đã lây nhiễm thành công ${target.displayName}`
     });
 
+    return { success: true };
+  },
+  useAiManipulationAbility: async (matchId, userId, type, content) => {
+    const session = getSession(matchId);
+    if (!session) throw new Error('Không tìm thấy trận đấu');
+    
+    if (userId.toString() !== session.spyUserId) {
+      throw new Error('Chỉ Gián điệp mới có thể dùng kỹ năng này');
+    }
+
+    if (session.selectedAbility !== 'MANIPULATE_AI') {
+      throw new Error('Bạn chưa chọn kỹ năng Thao túng AI');
+    }
+
+    if (session.aiManipulatedThisRound) {
+      throw new Error('Bạn đã sử dụng kỹ năng này trong vòng này rồi');
+    }
+
+    const ai = session.players.find(p => p.isAi && p.isAlive);
+    if (!ai) throw new Error('AI không còn sống để thao túng');
+
+    if (type === 'DESCRIBE') {
+      if (session.state !== 'DESCRIBING') throw new Error('Chỉ có thể miêu tả trong giai đoạn miêu tả');
+      await module.exports.submitDescription(matchId, ai.userId, content);
+    } else if (type === 'DISCUSS') {
+      if (session.state !== 'DISCUSSING') throw new Error('Chỉ có thể thảo luận trong giai đoạn thảo luận');
+      const name = getAnonymousName(ai);
+      emitToTopic(`/topic/match/${matchId}/chat`, {
+        sender_id: ai.userId,
+        sender_name: name,
+        content,
+        timestamp: Date.now()
+      });
+    } else {
+      throw new Error('Loại thao túng không hợp lệ');
+    }
+
+    session.aiManipulatedThisRound = true;
     return { success: true };
   },
   adminSetSpy: async (roomId, adminId, targetUserId) => {
