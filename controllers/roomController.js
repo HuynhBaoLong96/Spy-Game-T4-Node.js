@@ -14,10 +14,10 @@ const createRoomController = async (req, res, next) => {
     const room = await createRoom(user._id, is_private, room_code);
 
     res.status(201).json({
-      room_id: room._id,
+      room_id: room._id.toString(),
       room_code: room.roomCode,
       host: {
-        user_id: user._id,
+        user_id: user._id.toString(),
         display_name: user.displayName || user.username
       },
       status: room.status,
@@ -37,7 +37,7 @@ const getRoomsController = async (req, res, next) => {
     const rooms = await Room.find({ status: 'waiting', isPrivate: false });
     
     const roomList = rooms.map(r => ({
-      room_id: r._id,
+      room_id: r._id.toString(),
       room_code: r.roomCode,
       current_players: r.currentPlayers,
       max_players: r.maxPlayers,
@@ -66,11 +66,11 @@ const joinRoomController = async (req, res, next) => {
     const players = await RoomPlayer.find({ roomId: room._id });
 
     res.json({
-      room_id: room._id,
+      room_id: room._id.toString(),
       room_code: room.roomCode,
       current_players: room.currentPlayers,
       players: players.map(p => ({
-        user_id: p.userId,
+        user_id: p.userId.toString(),
         display_name: p.displayName
       }))
     });
@@ -108,7 +108,7 @@ const getPlayersController = async (req, res, next) => {
     res.json({
       room_id: roomId,
       players: players.map(p => ({
-        user_id: p.userId,
+        user_id: p.userId.toString(),
         display_name: p.displayName,
         username: p.username
       }))
@@ -135,15 +135,15 @@ const getRoomDetailController = async (req, res, next) => {
     const players = await RoomPlayer.find({ roomId });
 
     res.json({
-      room_id: room._id,
+      room_id: room._id.toString(),
       room_code: room.roomCode,
-      host_id: room.hostId,
+      host_id: room.hostId.toString(),
       current_players: room.currentPlayers,
       max_players: room.maxPlayers,
       status: room.status,
       is_private: room.isPrivate,
       players: players.map(p => ({
-        user_id: p.userId,
+        user_id: p.userId.toString(),
         display_name: p.displayName,
         username: p.username
       }))
@@ -168,7 +168,7 @@ const getRoomByCodeController = async (req, res, next) => {
     }
 
     res.json({
-      room_id: room._id,
+      room_id: room._id.toString(),
       room_code: room.roomCode,
       current_players: room.currentPlayers,
       max_players: room.maxPlayers,
@@ -282,8 +282,36 @@ const sendRoomMessageController = async (req, res, next) => {
   }
 };
 
+/**
+ * @desc    Tạo phòng đặc biệt (Special Round)
+ * @route   POST /api/rooms/create-special
+ */
+const createSpecialRoomController = async (req, res, next) => {
+  try {
+    const { is_private, room_code } = req.body;
+    const user = req.user;
+
+    const room = await createRoom(user._id, is_private ?? false, room_code);
+
+    res.status(201).json({
+      room_id: room._id.toString(),
+      room_code: room.roomCode,
+      host: {
+        user_id: user._id.toString(),
+        display_name: user.displayName || user.username
+      },
+      status: room.status,
+      current_players: room.currentPlayers,
+      is_special_round: true
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   createRoom: createRoomController,
+  createSpecialRoom: createSpecialRoomController,
   getRooms: getRoomsController,
   joinRoom: joinRoomController,
   leaveRoom: leaveRoomController,

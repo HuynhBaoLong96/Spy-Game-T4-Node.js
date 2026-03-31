@@ -75,7 +75,10 @@ const getGameStateController = async (req, res, next) => {
     // Trả về state phù hợp với người dùng
     const player = session.players.find(p => p.userId === user._id.toString());
     const isAnonymizedPhase = ['DISCUSSING', 'VOTING'].includes(session.state.toUpperCase());
-    
+
+    // Lấy descriptions của round hiện tại
+    const currentDescriptions = session.descriptions[session.currentRound] || {};
+
     res.json({
       match_id: session.matchId,
       room_id: session.roomId,
@@ -88,13 +91,15 @@ const getGameStateController = async (req, res, next) => {
       phase_end_time: session.phaseEndTime,
       remaining_seconds: Math.max(0, Math.floor((session.phaseEndTime - Date.now()) / 1000)),
       players: session.players.map(p => ({
-        user_id: p.userId,
+        user_id: p.userId.toString(),
         username: isAnonymizedPhase ? 'ĐANG GIẤU MẶT 🎭' : p.username,
         display_name: isAnonymizedPhase ? 'ĐANG GIẤU MẶT 🎭' : p.displayName,
         color: isAnonymizedPhase ? 'gray' : p.color,
         is_alive: p.isAlive,
         is_ai: p.isAi,
-        role: p.userId === user._id.toString() ? p.role : 'hidden'
+        role: p.userId === user._id.toString() ? p.role : 'hidden',
+        // Kèm description của từng player (nếu có) để FE hiện
+        description: currentDescriptions[p.userId] || null
       })),
       my_keyword: player && player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
       your_keyword: player && player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,

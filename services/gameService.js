@@ -71,10 +71,11 @@ const startGame = async (roomIdOrCode, hostUserId) => {
     currentRound: 1,
     state: 'ROLE_ASSIGN',
     players: [],
-    descriptions: {}, // round -> userId -> content
-    votes: {},        // round -> userId -> targetId
+    descriptions: { 1: {} }, // round -> userId -> content (khởi tạo sẵn round 1)
+    votes: { 1: {} },        // round -> userId -> targetId (khởi tạo sẵn round 1)
     roleCheckResults: {}, // userId -> correct (boolean)
     roleCheckDone: false,
+    aiDiscussUsedThisRound: false,
     phaseStartTime: Date.now(),
     phaseEndTime: Date.now() + (PHASE_DURATIONS.ROLE_ASSIGN * 1000),
     currentTurnUserId: null,
@@ -151,7 +152,8 @@ const startGame = async (roomIdOrCode, hostUserId) => {
   emitToRoom(room, 'GAME_START', {
     type: 'GAME_START',
     room_id: roomId,
-    match_id: match._id
+    match_id: match._id.toString(),
+    matchId: match._id.toString()
   });
 
   // Chuyển sang phase ROLE_ASSIGN
@@ -196,7 +198,6 @@ const broadcastRoles = (session) => {
     state: 'ROLE_ASSIGN',
     remaining_seconds: PHASE_DURATIONS.ROLE_ASSIGN,
     match_id: session.matchId,
-    state: session.state,
     players: session.players.map(p => ({
       user_id: p.userId,
       username: p.username,
@@ -266,6 +267,14 @@ const moveToDescribing = (session) => {
   session.currentTurnUserId = null; // Không dùng lượt miêu tả
   
   startPhaseTimer(session, PHASE_DURATIONS.DESCRIBING * 1000, moveToDiscussing);
+
+  // Thông báo chuyển phase cho FE (Round1Enter subscribe /topic/room/:roomId/state)
+  emitToTopic(`/topic/room/${session.roomId}/state`, {
+    type: 'PHASE_UPDATE',
+    state: 'DESCRIBING',
+    match_id: session.matchId,
+    room_id: session.roomId
+  });
 
   // AI tự động miêu tả sau 5-10 giây
   setTimeout(() => {
@@ -533,7 +542,7 @@ const processEndGameRewards = async (session, winnerRole) => {
         reward = -5;
       }
     } else {
-      if (player.role === 'civilian') {
+      if (player.role === 'CIVILIAN' || player.role === 'civilian') {
         reward = 15;
         didWin = true;
       } else {
@@ -575,7 +584,14 @@ const autoRoleCheckForAi = async (session) => {
 
 const autoDescribeForAi = async (session) => {
   const ai = session.players.find(p => p.isAi && p.isAlive);
-  if (ai && !session.descriptions[session.currentRound][ai.userId]) {
+  if (!ai) return;
+
+  // Đảm bảo descriptions[round] đã được khởi tạo trước khi đọc
+  if (!session.descriptions[session.currentRound]) {
+    session.descriptions[session.currentRound] = {};
+  }
+
+  if (!session.descriptions[session.currentRound][ai.userId]) {
     const content = await getAiDescription(session.civilianKeyword, session.currentRound);
     await module.exports.submitDescription(session.matchId, ai.userId, content);
   }
@@ -622,10 +638,18 @@ const getAlivePlayer = (session, userId) => {
 };
 
 const handlePlayerQuit = async (roomIdOrCode, userId) => {
+  if (!roomIdOrCode || !userId) return;
   for (const [matchId, session] of gameSessions.entries()) {
     if (session.roomId.toString() === roomIdOrCode.toString() || session.roomCode === roomIdOrCode) {
       const player = session.players.find(p => p.userId === userId.toString());
       if (player && player.isAlive) {
+        // Chỉ đánh dấu AFK nếu game đang diễn ra (không phải ROLE_ASSIGN hay GAME_OVER)
+        const activePhases = ['DESCRIBING', 'DISCUSSING', 'VOTING', 'VOTE_TIE', 'ROUND_RESULT', 'ROLE_CHECK', 'ROLE_CHECK_RESULT'];
+        if (!activePhases.includes(session.state)) {
+          // Đang ở ROLE_ASSIGN hoặc phase khác - bỏ qua, player chưa chính thức vào game
+          break;
+        }
+
         player.isAlive = false;
         await MatchPlayer.updateOne(
           { matchId: session.matchId, userId: userId },
@@ -636,7 +660,6 @@ const handlePlayerQuit = async (roomIdOrCode, userId) => {
           user_id: userId,
           display_name: player.displayName
         });
-        // Có thể cần checkWinCondition ngay lập tức
         await checkWinCondition(session);
       }
       break;

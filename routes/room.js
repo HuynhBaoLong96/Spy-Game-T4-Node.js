@@ -3,7 +3,8 @@ const router = express.Router();
 const { 
   createRoom, getRooms, joinRoom, leaveRoom, getPlayers, getRoomDetail, 
   getRoomByCode, kickPlayer, transferHost, voteByRoom, 
-  getMostVotedResult, getRoomMessages, sendRoomMessage 
+  getMostVotedResult, getRoomMessages, sendRoomMessage,
+  createSpecialRoom
 } = require('../controllers/roomController');
 const { startGame, adminSetSpy } = require('../controllers/gameController');
 const { protect } = require('../middleware/authMiddleware');
@@ -14,6 +15,9 @@ router.use(protect);
 
 router.post('/', createRoom);
 router.get('/', getRooms);
+
+// ⚠️ Route tĩnh phải đặt TRƯỚC route động /:roomId, /:roomCode
+router.post('/create-special', createSpecialRoom); // FE: gameApi.createSpecialRoom()
 
 // Lấy thông tin phòng
 router.get('/code/:roomCode', getRoomByCode); // Phải đặt trước /:roomId
