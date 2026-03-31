@@ -1,6 +1,12 @@
 // Tải các biến môi trường từ tệp .env vào process.env
 require('dotenv').config();
 
+// Đảm bảo mỗi lần restart server sẽ có một JWT_SECRET mới nếu không được cấu hình cố định
+// Điều này giúp ngăn chặn việc tự động đăng nhập từ các session cũ khi restart bài test
+if (!process.env.JWT_SECRET_FIXED) {
+  process.env.JWT_SECRET = process.env.JWT_SECRET + Math.random().toString(36).substring(7);
+}
+
 const express = require('express');
 const http = require('http');
 const cors = require('cors');

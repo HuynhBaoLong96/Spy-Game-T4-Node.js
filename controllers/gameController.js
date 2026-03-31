@@ -101,8 +101,9 @@ const getGameStateController = async (req, res, next) => {
         // Kèm description của từng player (nếu có) để FE hiện
         description: currentDescriptions[p.userId] || null
       })),
-      my_keyword: player && player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
-      your_keyword: player && player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
+      my_keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
+      your_keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
+      keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
       your_role: player && player.role ? player.role.toUpperCase() : 'UNKNOWN'
     });
   } catch (error) {
@@ -274,6 +275,24 @@ const submitVoteController = async (req, res, next) => {
   }
 };
 
+/**
+ * @desc    Sử dụng kỹ năng Thao túng AI
+ * @route   POST /api/game/:matchId/ability/manipulate-ai
+ */
+const useAiManipulationController = async (req, res, next) => {
+  try {
+    const { matchId } = req.params;
+    const { type, content } = req.body; // type: 'DESCRIBE' hoặc 'DISCUSS'
+    const user = req.user;
+
+    const result = await useAiManipulationAbility(matchId, user._id, type, content);
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   startGame: startGameController,
   adminSetSpy: adminSetSpyController,
@@ -283,6 +302,7 @@ module.exports = {
   confirmSpyAbility: confirmSpyAbilityController,
   useFakeMessage: useFakeMessageController,
   infectPlayer: infectPlayerController,
+  useAiManipulation: useAiManipulationController,
   adjustRewards: adjustRewardsController,
   setGameState: setGameStateController,
   submitDescription: submitDescriptionController,
