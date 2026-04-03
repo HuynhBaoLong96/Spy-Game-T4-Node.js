@@ -1031,20 +1031,48 @@ module.exports = {
     const session = getSession(matchId);
     if (!session || session.state !== 'ROLE_CHECK') throw new Error('Không phải lúc đoán từ khóa');
     
-    const isSpy = userId.toString() === session.spyUserId || userId.toString() === session.infectedUserId;
-    if (!isSpy) throw new Error('Chỉ Gián điệp bị loại mới có thể đoán từ khóa');
+    const player = getAlivePlayer(session, userId);
+    if (player.isAi) throw new Error('AI không thể đoán vai trò');
 
+    // Kiểm tra xem người chơi đã đoán chưa
+    if (session.roleCheckResults[userId.toString()] !== undefined) {
+      throw new Error('Bạn đã đoán vai trò rồi');
+    }
+
+    const isSpy = player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED';
     const correct = guessedKeyword.trim().toLowerCase() === session.civilianKeyword.toLowerCase();
-    session.spyGuessed = true; // Đánh dấu đã đoán xong để checkWinCondition không lặp lại
 
-    if (correct) {
-      // Gián điệp đoán đúng -> Gián điệp thắng
-      console.log(`[DEBUG] Gián điệp ${userId} đoán đúng từ khóa: ${guessedKeyword}`);
-      await moveToGameOver(session, 'spy');
-    } else {
-      // Gián điệp đoán sai -> Dân thường thắng
-      console.log(`[DEBUG] Gián điệp ${userId} đoán sai từ khóa: ${guessedKeyword}`);
-      await moveToGameOver(session, 'civilian');
+    session.roleCheckResults[userId.toString()] = correct; // Lưu kết quả đoán
+
+    // Xử lý phần thưởng cho Dân thường đoán đúng
+    if (!isSpy && correct) {
+      await addReward(userId, 10, 'GAME_REWARD', 'Dân thường đoán đúng vai trò');
+    }
+
+    // Gửi kết quả đoán riêng tư cho người chơi
+    emitToUser(userId, 'role-check-result', {
+      correct,
+      actual_role: isSpy ? 'SPY' : 'CIVILIAN',
+      reward_coins: correct ? 10 : 0,
+      coins_gained: correct ? 10 : 0,
+      abilities_available: isSpy && correct ? ['MANIPULATE_AI', 'INFECT'] : [], // Tạm thời cho cả 2 để FE xử lý
+      ability_available: isSpy && correct ? 'MANIPULATE_AI' : null, // Mặc định là MANIPULATE_AI nếu có
+      can_use_ability: isSpy && correct,
+      acknowledged: false
+    });
+
+    // Kiểm tra xem tất cả người chơi còn sống (trừ AI) đã đoán xong chưa
+    const aliveHumans = session.players.filter(p => p.isAlive && !p.isAi);
+    const guessedCount = Object.keys(session.roleCheckResults).length;
+
+    if (guessedCount >= aliveHumans.length) {
+      // Tất cả đã đoán xong, chuyển sang phase ROLE_CHECK_RESULT
+      setTimeout(() => {
+        const currentSession = gameSessions.get(matchId.toString());
+        if (currentSession && currentSession.state === 'ROLE_CHECK') {
+          onRoleCheckPhaseEnd(currentSession);
+        }
+      }, 2000); // Đợi một chút để FE kịp nhận kết quả riêng tư
     }
 
     return { submitted: true, correct };
