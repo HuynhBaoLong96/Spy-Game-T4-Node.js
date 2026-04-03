@@ -1,6 +1,9 @@
 const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 
+// Lazy load socketService to avoid circular dependencies
+const getSocketService = () => require('./socketService');
+
 /**
  * Khấu trừ tiền cược khi bắt đầu ván đấu
  */
@@ -16,6 +19,9 @@ const deductEntryFee = async (userId, fee) => {
   await user.save();
 
   await logTransaction(userId, -fee, 'BET', 'Phí vào cửa ván đấu');
+  
+  // Real-time update
+  getSocketService().emitToUser(userId, 'balance', { balance: user.balance });
 };
 
 /**
@@ -32,6 +38,14 @@ const addReward = async (userId, amount, type, description, addToRanking = false
 
   await user.save();
   await logTransaction(userId, amount, type, description);
+  
+  // Real-time update
+  getSocketService().emitToUser(userId, 'balance', { 
+    balance: user.balance,
+    rankingPoints: user.rankingPoints
+  });
+  
+  return user; // Trả về user đã cập nhật
 };
 
 /**
@@ -50,6 +64,9 @@ const applyRelief = async (userId) => {
   await user.save();
 
   await logTransaction(userId, reliefAmount, 'RELIEF', 'Quà cứu trợ Bankruptcy Relief');
+  
+  // Real-time update
+  getSocketService().emitToUser(userId, 'balance', { balance: user.balance });
 };
 
 /**
@@ -117,6 +134,9 @@ const dailyCheckin = async (userId) => {
 
   await logTransaction(userId, checkinAmount, 'DAILY_CHECKIN', 
     `Điểm danh hàng ngày (Ngày ${newStreak}) +${checkinAmount} xu`);
+
+  // Real-time update
+  getSocketService().emitToUser(userId, 'balance', { balance: user.balance });
 
   return {
     amount: checkinAmount,

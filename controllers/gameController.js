@@ -1,4 +1,4 @@
-const { startGame, getSession, submitDescription, submitVote, submitChat, submitRoleGuess, confirmSpyAbility, useFakeMessageAbility, infectPlayer, adminSetSpy, adjustRewards, setGameState } = require('../services/gameService');
+const { startGame, getSession, submitDescription, submitVote, submitChat, submitRoleGuess, confirmSpyAbility, useFakeMessageAbility, useAiManipulationAbility, infectPlayer, adminSetSpy, adjustRewards, setGameState } = require('../services/gameService');
 
 /**
  * @desc    Bắt đầu game
@@ -74,17 +74,29 @@ const getGameStateController = async (req, res, next) => {
 
     // Trả về state phù hợp với người dùng
     const player = session.players.find(p => p.userId === user._id.toString());
-    const isAnonymizedPhase = ['DISCUSSING', 'VOTING'].includes(session.state.toUpperCase());
-
-    // Lấy descriptions của round hiện tại
+    const phaseName = session.state.toUpperCase();
+    const isAnonymizedPhase = ['DESCRIBING', 'DISCUSSING', 'VOTING'].includes(phaseName);
+    const isDiscussing = phaseName === 'DISCUSSING';
+    
+    // Lấy hàm ẩn danh chuẩn từ service hoặc định nghĩa lại y hệt
+    const getAnonymousName = (p) => {
+      if (p.isAi) return 'AI KeywordSpy';
+      const map = {
+        red: 'Mèo Béo (Đỏ) 🎭', blue: 'Cún Con (Xanh) 🎭', green: 'Gấu Trúc (Lục) 🎭',
+        yellow: 'Vịt Vàng (Vàng) 🎭', purple: 'Cáo Nhỏ (Tím) 🎭', orange: 'Hổ Con (Cam) 🎭',
+        pink: 'Thỏ Ngọc (Hồng) 🎭', cyan: 'Chim Cánh Cụt (Lam) 🎭'
+      };
+      return map[p.color] || 'Người chơi 🎭';
+    };
+    
     const currentDescriptions = session.descriptions[session.currentRound] || {};
-
+    
     res.json({
       match_id: session.matchId,
       room_id: session.roomId,
       room_code: session.roomCode,
-      phase: session.state.toUpperCase(),
-      state: session.state.toUpperCase(),
+      phase: phaseName,
+      state: phaseName,
       current_round: session.currentRound,
       current_turn_user_id: session.currentTurnUserId,
       phase_start_time: session.phaseStartTime,
@@ -92,15 +104,19 @@ const getGameStateController = async (req, res, next) => {
       remaining_seconds: Math.max(0, Math.floor((session.phaseEndTime - Date.now()) / 1000)),
       players: session.players.map(p => ({
         user_id: p.userId.toString(),
-        username: isAnonymizedPhase ? 'ĐANG GIẤU MẶT 🎭' : p.username,
-        display_name: isAnonymizedPhase ? 'ĐANG GIẤU MẶT 🎭' : p.displayName,
-        color: isAnonymizedPhase ? 'gray' : p.color,
+        username: isAnonymizedPhase ? getAnonymousName(p) : p.username,
+        display_name: isAnonymizedPhase ? getAnonymousName(p) : p.displayName,
+        color: isDiscussing ? 'gray' : p.color,
         is_alive: p.isAlive,
         is_ai: p.isAi,
-        role: p.userId === user._id.toString() ? p.role : 'hidden',
+        // Nếu đã kết thúc game, hiện vai trò thật của tất cả. Nếu không, chỉ hiện vai trò của bản thân.
+        role: (phaseName === 'GAME_OVER' || p.userId === user._id.toString()) ? p.role : 'hidden',
         // Kèm description của từng player (nếu có) để FE hiện
-        description: currentDescriptions[p.userId] || null
+        description: currentDescriptions[p.userId] || null,
+        score: p.lastReward || 0
       })),
+      civilian_keyword: phaseName === 'GAME_OVER' ? session.civilianKeyword : undefined,
+      spy_keyword: phaseName === 'GAME_OVER' ? session.spyKeyword : undefined,
       my_keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
       your_keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
       keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,

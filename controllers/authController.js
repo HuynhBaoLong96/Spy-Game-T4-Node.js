@@ -135,6 +135,12 @@ const login = async (req, res, next) => {
     const user = await findByUsernameOrEmail(identifier);
 
     if (user && (await user.matchPassword(password))) {
+      // Kiểm tra trạng thái hoạt động (Ban)
+      // Chỉ chặn nếu active được set rõ ràng là false
+      if (user.active === false) {
+        return res.status(403).json({ message: 'Tài khoản của bạn đã bị khóa bởi Admin' });
+      }
+
       const accessToken = generateAccessToken(user);
       const refreshToken = generateRefreshToken(user);
 

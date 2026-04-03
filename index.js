@@ -58,6 +58,7 @@ const keywordRoutes = require('./routes/keyword');
 const matchRoutes = require('./routes/match');
 const shopRoutes = require('./routes/shop');
 const skillRoutes = require('./routes/skill');
+const adminRoutes = require('./routes/admin');
 
 // Gắn các routes vào ứng dụng
 app.use('/api/health', healthRoutes);
@@ -70,6 +71,7 @@ app.use('/api/keywords', keywordRoutes);
 app.use('/api/matches', matchRoutes);
 app.use('/api/shop', shopRoutes);
 app.use('/api/skill', skillRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Endpoint mặc định
 app.get('/', (req, res) => {
