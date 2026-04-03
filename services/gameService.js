@@ -558,23 +558,10 @@ const checkWinCondition = async (session) => {
 
   console.log(`[DEBUG] checkWinCondition matchId=${session.matchId}: spyAlive=${spyAlive}, civiliansAlive=${civilianHumansAlive}, round=${session.currentRound}`);
 
-  // 1. Nếu Spy bị loại (bằng cách vote hoặc afk) -> Phải cho Spy đoán từ khóa
+  // 1. Nếu Spy bị loại (bằng cách vote hoặc afk) -> Dân thường thắng luôn (theo yêu cầu user: skip đoán từ khóa)
   if (!spyAlive) {
-    // Tìm Spy bị loại gần nhất (chính là spyUserId của session nếu session.players[spyUserId].isAlive === false)
-    const spy = session.players.find(p => p.userId === session.spyUserId);
-    if (spy && !spy.isAlive && !session.spyGuessed) {
-      console.log(`[DEBUG] Spy bị loại, chuyển sang phase đoán từ khóa cho Spy ${spy.userId}`);
-      return moveToSpyKeywordGuess(session, spy.userId);
-    }
-    
-    // Nếu Spy đã bị loại VÀ đã đoán rồi (logic này chạy khi timer kết thúc hoặc submitRoleGuess gọi)
-    // thì ở đây không được qua vòng mới nữa.
-    if (session.spyGuessed) {
-      console.log(`[DEBUG] Spy already guessed and eliminated. Ending game check.`);
-      return;
-    }
-    
-    return;
+    console.log(`[DEBUG] Spy đã bị loại, Dân thường thắng ngay lập tức.`);
+    return moveToGameOver(session, 'civilian');
   } 
   
   // 2. Nếu chỉ còn 1 Dân thường (Human) và 1 Spy (có thể có AI) -> Spy thắng
@@ -681,7 +668,10 @@ const broadcastRoleCheckResults = async (session) => {
       correct,
       actual_role: isSpy ? 'SPY' : 'CIVILIAN',
       reward_coins: correct ? 10 : 0,
+      coins_gained: correct ? 10 : 0, // Thêm coins_gained cho FE
       abilities_available: abilities,
+      ability_available: abilities.length > 0 ? abilities[0] : null, // Thêm dạng string cho FE
+      can_use_ability: abilities.length > 0, // Thêm flag cho FE
       alive_humans: (isSpy && correct) ? aliveHumans : [],
       acknowledged: false
     };
@@ -716,6 +706,7 @@ const moveToGameOver = async (session, winnerRole) => {
     civilian_keyword: session.civilianKeyword,
     spy_keyword: session.spyKeyword,
     match_id: session.matchId,
+    spy_user_id: session.spyUserId, // Thêm để FE nhận diện được Spy dễ hơn
     players: session.players.map(p => {
       const scoreValue = p.lastReward !== undefined ? p.lastReward : 0;
       return {
@@ -724,6 +715,7 @@ const moveToGameOver = async (session, winnerRole) => {
         username: p.username,
         role: p.role.toUpperCase(), // "SPY", "CIVILIAN", hoặc "INFECTED"
         score: scoreValue, // Số điểm/xu cộng thêm (ví dụ: 10 hoặc -5)
+        score_gained: scoreValue, // Tương thích với FE (xem GameScreen.tsx:1442-1471)
         is_alive: p.isAlive
       };
     })
@@ -1164,6 +1156,25 @@ module.exports = {
 
     session.aiManipulatedThisRound = true;
     return { success: true };
+  },
+  useAbility: async (matchId, userId, type, content) => {
+    const session = getSession(matchId);
+    if (!session) throw new Error('Không tìm thấy trận đấu');
+
+    if (userId.toString() !== session.spyUserId) {
+      throw new Error('Chỉ Gián điệp mới có thể dùng kỹ năng');
+    }
+
+    const ability = session.selectedAbility;
+    if (!ability) throw new Error('Bạn chưa chọn kỹ năng nào');
+
+    if (ability === 'MANIPULATE_AI') {
+      return await module.exports.useAiManipulationAbility(matchId, userId, type, content);
+    } else if (ability === 'FAKE_MESSAGE') {
+      return await module.exports.useFakeMessageAbility(matchId, userId, content);
+    } else {
+      throw new Error(`Kỹ năng ${ability} không hỗ trợ dùng qua đây`);
+    }
   },
   adminSetSpy: async (roomId, adminId, targetUserId) => {
     const room = await Room.findById(roomId);

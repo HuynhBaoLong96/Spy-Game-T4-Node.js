@@ -1,4 +1,21 @@
-const { startGame, getSession, submitDescription, submitVote, submitChat, submitRoleGuess, confirmSpyAbility, useFakeMessageAbility, useAiManipulationAbility, infectPlayer, adminSetSpy, adjustRewards, setGameState } = require('../services/gameService');
+const { 
+  startGame, 
+  getSession, 
+  getAnonymousName, 
+  handlePlayerQuit, 
+  submitDescription, 
+  submitVote, 
+  submitChat, 
+  submitRoleGuess, 
+  confirmSpyAbility, 
+  useFakeMessageAbility, 
+  useAiManipulationAbility, 
+  infectPlayer, 
+  useAbility: useAbilityService, 
+  adminSetSpy, 
+  adjustRewards, 
+  setGameState 
+} = require('../services/gameService');
 
 /**
  * @desc    Bắt đầu game
@@ -102,19 +119,26 @@ const getGameStateController = async (req, res, next) => {
       phase_start_time: session.phaseStartTime,
       phase_end_time: session.phaseEndTime,
       remaining_seconds: Math.max(0, Math.floor((session.phaseEndTime - Date.now()) / 1000)),
-      players: session.players.map(p => ({
-        user_id: p.userId.toString(),
-        username: isAnonymizedPhase ? getAnonymousName(p) : p.username,
-        display_name: isAnonymizedPhase ? getAnonymousName(p) : p.displayName,
-        color: isDiscussing ? 'gray' : p.color,
-        is_alive: p.isAlive,
-        is_ai: p.isAi,
-        // Nếu đã kết thúc game, hiện vai trò thật của tất cả. Nếu không, chỉ hiện vai trò của bản thân.
-        role: (phaseName === 'GAME_OVER' || p.userId === user._id.toString()) ? p.role : 'hidden',
-        // Kèm description của từng player (nếu có) để FE hiện
-        description: currentDescriptions[p.userId] || null,
-        score: p.lastReward || 0
-      })),
+      players: session.players.map(p => {
+        const roleUpper = p.role.toUpperCase();
+        const isMe = p.userId === user._id.toString();
+        const showRole = phaseName === 'GAME_OVER' || isMe;
+        const scoreValue = p.lastReward || 0;
+        
+        return {
+          user_id: p.userId.toString(),
+          username: isAnonymizedPhase ? getAnonymousName(p) : p.username,
+          display_name: isAnonymizedPhase ? getAnonymousName(p) : p.displayName,
+          color: isDiscussing ? 'gray' : p.color,
+          is_alive: p.isAlive,
+          is_ai: p.isAi,
+          // Trả về role in uppercase để FE dễ so sánh
+          role: showRole ? roleUpper : 'hidden',
+          description: currentDescriptions[p.userId] || null,
+          score: scoreValue,
+          score_gained: scoreValue
+        };
+      }),
       civilian_keyword: phaseName === 'GAME_OVER' ? session.civilianKeyword : undefined,
       spy_keyword: phaseName === 'GAME_OVER' ? session.spyKeyword : undefined,
       my_keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
@@ -309,6 +333,24 @@ const useAiManipulationController = async (req, res, next) => {
   }
 };
 
+/**
+ * @desc    Sử dụng kỹ năng (Fake Message hoặc Thao túng AI)
+ * @route   POST /api/game/:matchId/use-ability
+ */
+const useAbilityController = async (req, res, next) => {
+  try {
+    const { matchId } = req.params;
+    const { type, content } = req.body;
+    const user = req.user;
+
+    const result = await useAbilityService(matchId, user._id, type, content);
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   startGame: startGameController,
   adminSetSpy: adminSetSpyController,
@@ -319,6 +361,7 @@ module.exports = {
   useFakeMessage: useFakeMessageController,
   infectPlayer: infectPlayerController,
   useAiManipulation: useAiManipulationController,
+  useAbility: useAbilityController, // Thêm controller mới
   adjustRewards: adjustRewardsController,
   setGameState: setGameStateController,
   submitDescription: submitDescriptionController,

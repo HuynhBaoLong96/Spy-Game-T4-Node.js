@@ -158,13 +158,21 @@ const kickPlayer = async (roomId, adminId, targetUserId) => {
   room.currentPlayers = await RoomPlayer.countDocuments({ roomId });
   await room.save();
 
-  // Thông báo ngay cho tất cả trong phòng
+  // Thông báo ngay cho tất cả trong phòng (bao gồm cả người bị kick để FE họ nhận được)
   emitToRoom(room, 'PLAYER_KICKED', {
     type: 'PLAYER_KICKED',
     user_id: targetUserId.toString(),
+    target_user_id: targetUserId.toString(), // Thêm target_user_id để khớp với FE logic
     display_name: kickedPlayer ? kickedPlayer.displayName : 'Unknown',
     current_players: room.currentPlayers,
     max_players: room.maxPlayers
+  });
+
+  // Gửi thông báo riêng tư cho người bị đuổi (nếu FE đang lắng nghe /user/queue/room-events)
+  const { emitToUser } = require('./socketService');
+  emitToUser(targetUserId, 'room-events', {
+    type: 'KICKED',
+    message: 'Bạn đã bị đuổi ra khỏi phòng chơi'
   });
 
   broadcastRoomUpdate(room);
