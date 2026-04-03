@@ -8,7 +8,7 @@ const isAdmin = require('../middleware/adminMiddleware');
 router.use(protect);
 
 router.get('/:matchId/state', getGameState);
-router.post('/:matchId/set-state', setGameState); // Thêm mới
+router.post('/:matchId/set-state', isAdmin, setGameState); // Thêm mới
 router.post('/:matchId/describe', submitDescription);
 router.post('/:matchId/vote', submitVote);
 router.post('/:matchId/chat', submitChat);

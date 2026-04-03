@@ -27,7 +27,7 @@ const userSchema = new mongoose.Schema({
   passwordHash: {
     type: String,
     required: [true, 'Vui lòng nhập mật khẩu'],
-    minlength: 6,
+    minlength: 5,
     select: false // Không tự động trả về password khi truy vấn
   },
   role: {

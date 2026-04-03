@@ -140,9 +140,14 @@ async function identifyUserFromHeaders(headers) {
       console.log('[STOMP] Token decoded but no ID found.');
       return null;
     }
-    const user = await User.findById(decoded.id).select('_id username displayName');
+    const user = await User.findById(decoded.id).select('_id username displayName active');
     if (!user) {
       console.log(`[STOMP] Token valid for ID ${decoded.id} but user not found in DB.`);
+      return null;
+    }
+    if (!user.active) {
+      console.log(`[STOMP] User ${user.username} is banned.`);
+      return null;
     }
     return user;
   } catch (e) {
@@ -751,12 +756,30 @@ const emitToLobby = (event, data) => {
   emitToTopic('/topic/rooms/lobby', data);
 };
 
+/**
+ * Ngắt kết nối tất cả session của một user.
+ */
+const disconnectUser = (userId) => {
+  const userSessionIds = userToSessions.get(userId.toString());
+  if (!userSessionIds) return;
+
+  userSessionIds.forEach(sessionId => {
+    const session = sessions.get(sessionId);
+    if (session && session.ws) {
+      console.log(`[STOMP] Disconnecting banned user session: ${sessionId}`);
+      session.ws.close(1008, 'Account banned'); // 1008 = Policy Violation
+      cleanupSession(sessionId);
+    }
+  });
+};
+
 module.exports = {
   init,
   emitToRoom,
   emitToLobby,
   emitToTopic,
   emitToUser,
+  disconnectUser,
   // Debug helper
   getDebugInfo: () => ({
     totalSessions: sessions.size,
