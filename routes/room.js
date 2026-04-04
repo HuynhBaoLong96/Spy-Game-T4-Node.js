@@ -37,7 +37,8 @@ router.get('/:roomId/result/most-voted', getMostVotedResult);
 router.get('/:roomId/messages', getRoomMessages);
 router.post('/:roomId/messages', sendRoomMessage);
 
-// Route Admin
-router.post('/:roomId/admin/set-spy', isAdmin, adminSetSpy); // body: { user_id }
+// Route Thao tác phòng (Cần đặt TRƯỚC route Admin nếu muốn ghi đè middleware)
+router.post('/:roomId/set-spy', adminSetSpy); // Cho phép Host gọi API này
+router.post('/:roomId/admin/set-spy', isAdmin, adminSetSpy); // Giữ lại cho Admin nếu cần
 
 module.exports = router;

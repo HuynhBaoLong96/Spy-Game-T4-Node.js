@@ -57,16 +57,16 @@ const startGameController = async (req, res, next) => {
 };
 
 /**
- * @desc    Admin đặt người làm Spy
- * @route   POST /api/rooms/:roomId/admin/set-spy
+ * @desc    Đặt người làm Spy (Chủ phòng hoặc Admin)
+ * @route   POST /api/rooms/:roomId/set-spy
  */
 const adminSetSpyController = async (req, res, next) => {
   try {
     const { roomId } = req.params;
     const { user_id } = req.body;
-    const admin = req.user;
+    const user = req.user;
 
-    await adminSetSpy(roomId, admin._id, user_id);
+    await adminSetSpy(roomId, user._id, user_id);
 
     res.json({ message: 'Đã đặt Gián điệp thành công' });
   } catch (error) {
@@ -97,7 +97,6 @@ const getGameStateController = async (req, res, next) => {
     
     // Lấy hàm ẩn danh chuẩn từ service hoặc định nghĩa lại y hệt
     const getAnonymousName = (p) => {
-      if (p.isAi) return 'AI KeywordSpy';
       const map = {
         red: 'Mèo Béo (Đỏ) 🎭', blue: 'Cún Con (Xanh) 🎭', green: 'Gấu Trúc (Lục) 🎭',
         yellow: 'Vịt Vàng (Vàng) 🎭', purple: 'Cáo Nhỏ (Tím) 🎭', orange: 'Hổ Con (Cam) 🎭',
@@ -144,7 +143,9 @@ const getGameStateController = async (req, res, next) => {
       my_keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
       your_keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
       keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
-      your_role: player && player.role ? player.role.toUpperCase() : 'UNKNOWN'
+      your_role: player && player.role ? player.role.toUpperCase() : 'UNKNOWN',
+      // Thêm thông tin kết quả chọn vai trò để FE có thể hiển thị modal qua API fallback
+      personal_role_check_result: session.detailedRoleCheckResults ? session.detailedRoleCheckResults[user._id.toString()] : null
     });
   } catch (error) {
     next(error);
