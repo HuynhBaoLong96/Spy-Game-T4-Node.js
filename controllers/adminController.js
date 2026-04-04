@@ -441,10 +441,13 @@ const getAllKeywords = async (req, res, next) => {
 
     const keywords = await KeywordPair.find(query).sort({ createdAt: -1 });
     
-    // Đảm bảo có 'id'
+    // Đảm bảo có 'id' và map đúng tên trường cho FE
     const keywordsWithId = keywords.map(k => ({
-      ...k._doc,
-      id: k._id.toString()
+      id: k._id.toString(),
+      keyword1: k.civilianKeyword,
+      keyword2: k.spyKeyword,
+      category: k.category,
+      createdAt: k.createdAt
     }));
 
     res.json(keywordsWithId);
@@ -459,15 +462,18 @@ const getAllKeywords = async (req, res, next) => {
  */
 const createKeyword = async (req, res, next) => {
   try {
-    const { civilianKeyword, spyKeyword, category } = req.body;
+    const { keyword1, keyword2, civilianKeyword, spyKeyword, category } = req.body;
     
-    if (!civilianKeyword || !spyKeyword) {
+    const finalCivilian = keyword1 || civilianKeyword;
+    const finalSpy = keyword2 || spyKeyword;
+
+    if (!finalCivilian || !finalSpy) {
       return res.status(400).json({ message: 'Thiếu từ khóa dân thường hoặc gián điệp' });
     }
 
     const keyword = await KeywordPair.create({
-      civilianKeyword,
-      spyKeyword,
+      civilianKeyword: finalCivilian,
+      spyKeyword: finalSpy,
       category: category || 'General'
     });
 
@@ -487,15 +493,15 @@ const createKeyword = async (req, res, next) => {
 const updateKeyword = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { civilianKeyword, spyKeyword, category } = req.body;
+    const { keyword1, keyword2, civilianKeyword, spyKeyword, category } = req.body;
 
     const keyword = await KeywordPair.findById(id);
     if (!keyword) {
       return res.status(404).json({ message: 'Không tìm thấy bộ từ khóa' });
     }
 
-    if (civilianKeyword) keyword.civilianKeyword = civilianKeyword;
-    if (spyKeyword) keyword.spyKeyword = spyKeyword;
+    if (keyword1 || civilianKeyword) keyword.civilianKeyword = keyword1 || civilianKeyword;
+    if (keyword2 || spyKeyword) keyword.spyKeyword = keyword2 || spyKeyword;
     if (category) keyword.category = category;
 
     await keyword.save();

@@ -528,9 +528,16 @@ function sendToSession(sessionId, destination, data) {
   // Tìm subscriptionId cho destination này
   let subscriptionId = null;
   let clientDestination = destination;
+  
+  // Chuẩn hóa destination để so sánh
+  const normalizedTarget = normalizeTopic(destination);
+
   for (const [subId, dest] of session.subscriptions.entries()) {
-    // So sánh normalized để khớp linh hoạt
-    if (normalizeTopic(dest) === normalizeTopic(destination) || destination.startsWith(dest) || dest === destination) {
+    const normalizedSub = normalizeTopic(dest);
+    // So sánh linh hoạt: chính xác, startsWith, hoặc /user/queue/ match
+    if (normalizedSub === normalizedTarget || 
+        normalizedTarget.startsWith(normalizedSub) || 
+        (normalizedTarget.includes('/queue/') && normalizedSub.includes('/queue/') && normalizedTarget.split('/').pop() === normalizedSub.split('/').pop())) {
       subscriptionId = subId;
       clientDestination = dest; // dùng đúng string client đã subscribe
       break;

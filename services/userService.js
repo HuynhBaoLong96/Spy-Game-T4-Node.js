@@ -79,6 +79,9 @@ const changePassword = async (username, oldPassword, newPassword) => {
 
   // Cập nhật mật khẩu mới
   user.passwordHash = newPassword;
+  // Xóa các token reset nếu có
+  user.resetToken = undefined;
+  user.resetTokenExpiry = undefined;
   await user.save();
   return true;
 };
