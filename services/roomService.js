@@ -84,13 +84,40 @@ const joinRoom = async (roomCode, userId) => {
     await room.save();
 
     // Thông báo ngay lập tức cho mọi người trong phòng: có người mới vào
+    const players = await RoomPlayer.find({ roomId: room._id });
     await getSocketService().emitToRoom(room, 'PLAYER_JOIN', {
       type: 'PLAYER_JOIN',
       user_id: userId.toString(),
       display_name: user.displayName || user.username,
       username: user.username,
       current_players: room.currentPlayers,
-      max_players: room.maxPlayers
+      max_players: room.maxPlayers,
+      players: players.map(p => ({
+        user_id: p.userId ? p.userId.toString() : '',
+        id: p.userId ? p.userId.toString() : '',
+        display_name: p.displayName || p.username || 'Người chơi',
+        username: p.username || 'Người chơi',
+        isHost: p.userId && room.hostId ? String(p.userId) === String(room.hostId) : false
+      }))
+    });
+  } else {
+    // Nếu người chơi đã có trong RoomPlayer (do lỗi out không sạch trước đó), 
+    // vẫn gửi thông báo JOIN để FE cập nhật lại UI
+    const players = await RoomPlayer.find({ roomId: room._id });
+    await getSocketService().emitToRoom(room, 'PLAYER_JOIN', {
+      type: 'PLAYER_JOIN',
+      user_id: userId.toString(),
+      display_name: user.displayName || user.username,
+      username: user.username,
+      current_players: room.currentPlayers,
+      max_players: room.maxPlayers,
+      players: players.map(p => ({
+        user_id: p.userId ? p.userId.toString() : '',
+        id: p.userId ? p.userId.toString() : '',
+        display_name: p.displayName || p.username || 'Người chơi',
+        username: p.username || 'Người chơi',
+        isHost: p.userId && room.hostId ? String(p.userId) === String(room.hostId) : false
+      }))
     });
   }
 
@@ -138,13 +165,21 @@ const leaveRoom = async (roomId, userId) => {
   await room.save();
 
   // Thông báo ngay: có người rời phòng
+  const players = await RoomPlayer.find({ roomId: room._id });
   await getSocketService().emitToRoom(room, 'PLAYER_LEAVE', {
     type: 'PLAYER_LEAVE',
     user_id: userId.toString(),
     display_name: leavingPlayer ? leavingPlayer.displayName : 'Unknown',
     new_host_id: room.hostId.toString(),
     current_players: room.currentPlayers,
-    max_players: room.maxPlayers
+    max_players: room.maxPlayers,
+    players: players.map(p => ({
+      user_id: p.userId ? p.userId.toString() : '',
+      id: p.userId ? p.userId.toString() : '',
+      display_name: p.displayName || p.username || 'Người chơi',
+      username: p.username || 'Người chơi',
+      isHost: p.userId && room.hostId ? String(p.userId) === String(room.hostId) : false
+    }))
   });
 
   await broadcastRoomUpdate(room);
@@ -178,13 +213,21 @@ const kickPlayer = async (roomId, adminId, targetUserId) => {
   await room.save();
 
   // Thông báo ngay cho tất cả trong phòng (bao gồm cả người bị kick để FE họ nhận được)
+  const players = await RoomPlayer.find({ roomId: room._id });
   await getSocketService().emitToRoom(room, 'PLAYER_KICKED', {
     type: 'PLAYER_KICKED',
     user_id: targetUserId.toString(),
     target_user_id: targetUserId.toString(), // Thêm target_user_id để khớp với FE logic
     display_name: kickedPlayer ? kickedPlayer.displayName : 'Unknown',
     current_players: room.currentPlayers,
-    max_players: room.maxPlayers
+    max_players: room.maxPlayers,
+    players: players.map(p => ({
+      user_id: p.userId ? p.userId.toString() : '',
+      id: p.userId ? p.userId.toString() : '',
+      display_name: p.displayName || p.username || 'Người chơi',
+      username: p.username || 'Người chơi',
+      isHost: p.userId && room.hostId ? String(p.userId) === String(room.hostId) : false
+    }))
   });
 
   // Gửi thông báo riêng tư cho người bị đuổi (nếu FE đang lắng nghe /user/queue/room-events)
@@ -223,7 +266,7 @@ const transferHost = async (roomId, currentHostId, newHostId) => {
 
 const broadcastRoomUpdate = async (room) => {
   const players = await RoomPlayer.find({ roomId: room._id });
-  await getSocketService().emitToRoom(room, 'ROOM_UPDATE', {
+  const responseData = {
     type: 'ROOM_UPDATE',
     room_id: room._id.toString(),
     room_code: room.roomCode,
@@ -232,12 +275,18 @@ const broadcastRoomUpdate = async (room) => {
     max_players: room.maxPlayers,
     status: room.status,
     is_private: room.isPrivate,
+    is_special_round: room.isSpecialRound || false,
+    isSpecialRound: room.isSpecialRound || false,
     players: players.map(p => ({
-      user_id: p.userId.toString(),
-      display_name: p.displayName,
-      username: p.username
+      user_id: p.userId ? p.userId.toString() : '',
+      id: p.userId ? p.userId.toString() : '',
+      display_name: p.displayName || p.username || 'Người chơi',
+      username: p.username || 'Người chơi',
+      isHost: p.userId && room.hostId ? String(p.userId) === String(room.hostId) : false
     }))
-  });
+  };
+
+  await getSocketService().emitToRoom(room, 'ROOM_UPDATE', responseData);
 };
 
 const broadcastLobbyRoomEvent = (room, eventType) => {
