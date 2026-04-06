@@ -7,6 +7,8 @@ const Match = require('../models/Match');
 const { refreshAllDurations, skipPhase } = require('../services/gameService');
 const { addReward } = require('../services/economyService');
 const socketService = require('../services/socketService');
+const aiService = require('../services/aiService');
+const roomService = require('../services/roomService');
 
 /**
  * @desc    Tặng xu cho người dùng (Admin)
@@ -580,6 +582,71 @@ const adminSkipPhase = async (req, res, next) => {
   }
 };
 
+/**
+ * @desc    Test kết nối Gemini AI
+ * @route   POST /api/admin/ai-test
+ */
+const testAiConnection = async (req, res, next) => {
+  try {
+    const { keyword = 'Mèo' } = req.body;
+    const result = await aiService.testAiConnection(keyword);
+    res.json(result);
+  } catch (error) {
+    console.error('[ADMIN] AI test error:', error);
+    next(error);
+  }
+};
+
+/**
+ * @desc    Thêm người chơi vào phòng (Test)
+ * @route   POST /api/admin/rooms/:roomId/add-player
+ */
+const addPlayerToRoom = async (req, res, next) => {
+  try {
+    const { roomId } = req.params;
+    const { identifier } = req.body;
+
+    if (!identifier) {
+      return res.status(400).json({ error: 'Vui lòng cung cấp Username hoặc Email' });
+    }
+
+    // Tìm phòng
+    const room = await Room.findById(roomId);
+    if (!room) {
+      return res.status(404).json({ error: 'Không tìm thấy phòng' });
+    }
+
+    // Tìm người chơi
+    const user = await User.findOne({
+      $or: [
+        { username: identifier.trim() },
+        { email: identifier.trim().toLowerCase() }
+      ]
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'Không tìm thấy người dùng' });
+    }
+
+    // Kiểm tra xem đã trong phòng chưa
+    const existing = await RoomPlayer.findOne({ roomId, userId: user._id });
+    if (existing) {
+      return res.status(400).json({ error: 'Người chơi này đã ở trong phòng' });
+    }
+
+    // Dùng roomService.joinRoom để xử lý logic join chuẩn (bao gồm socket update)
+    await roomService.joinRoom(room.roomCode, user._id);
+
+    res.json({
+      success: true,
+      message: `Đã thêm ${user.username} vào phòng ${room.roomCode}`
+    });
+  } catch (error) {
+    console.error('[ADMIN] Add player error:', error);
+    next(error);
+  }
+};
+
 module.exports = {
   getGameSettings,
   updateGameSettings,
@@ -596,5 +663,7 @@ module.exports = {
   deleteKeyword,
   getAdminStats,
   adminSkipPhase,
-  addCoinsToUser
+  addCoinsToUser,
+  testAiConnection,
+  addPlayerToRoom
 };

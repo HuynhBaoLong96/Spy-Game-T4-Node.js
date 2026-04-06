@@ -16,7 +16,9 @@ const {
   deleteKeyword,
   getAdminStats,
   adminSkipPhase,
-  addCoinsToUser
+  addCoinsToUser,
+  testAiConnection,
+  addPlayerToRoom
 } = require('../controllers/adminController');
 const { protect } = require('../middleware/authMiddleware');
 const isAdmin = require('../middleware/adminMiddleware');
@@ -41,6 +43,7 @@ router.post('/users/add-coins', addCoinsToUser);
 
 // Room management
 router.get('/rooms', getAllRooms);
+router.post('/rooms/:roomId/add-player', addPlayerToRoom);
 router.delete('/rooms/:roomId', deleteRoom);
 
 // Keyword management
@@ -54,5 +57,8 @@ router.get('/stats', getAdminStats);
 
 // Match management (Skip phase)
 router.post('/matches/:matchId/skip-phase', adminSkipPhase);
+
+// AI test
+router.post('/ai-test', testAiConnection);
 
 module.exports = router;

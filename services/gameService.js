@@ -7,7 +7,7 @@ const UserStats = require('../models/UserStats');
 const GameSettings = require('../models/GameSettings');
 const { getRandomKeywordPair, generateHint } = require('./keywordService');
 const { deductEntryFee, addReward } = require('./economyService');
-const { getAiDescription } = require('./aiService');
+const { getAiDescription, getAiDiscussion, getAiVoteTarget } = require('./aiService');
 
 // Lazy load socketService to avoid circular dependencies
 const getSocketService = () => require('./socketService');
@@ -133,6 +133,7 @@ const startGame = async (roomIdOrCode, hostUserId) => {
     roleCheckResults: {}, // userId -> correct (boolean)
     roleCheckDone: false,
     aiDiscussUsedThisRound: false,
+    chatHistory: [], // Lưu lịch sử chat để AI thảo luận có ngữ cảnh
     phaseStartTime: Date.now(),
     phaseEndTime: Date.now() + (durations.ROLE_ASSIGN * 1000),
     currentTurnUserId: null,
@@ -502,7 +503,7 @@ const refreshAllDurations = async () => {
   }
 };
 
-const moveToDescribing = (session) => {
+async function moveToDescribing(session) {
   session.state = 'DESCRIBING';
   session.currentTurnUserId = null; 
   
@@ -527,7 +528,7 @@ const moveToDescribing = (session) => {
   }, 5000 + Math.random() * 5000);
 };
 
-const moveToDiscussing = (session) => {
+async function moveToDiscussing(session) {
   session.state = 'DISCUSSING';
   session.currentTurnUserId = null;
   startPhaseTimer(session, session.durations.DISCUSSING * 1000, moveToVoting);
@@ -540,7 +541,7 @@ const moveToDiscussing = (session) => {
   });
 };
 
-const moveToVoting = (session) => {
+async function moveToVoting(session) {
   session.state = 'VOTING';
   session.currentTurnUserId = null;
   startPhaseTimer(session, session.durations.VOTING * 1000, processVoteResult);
@@ -551,9 +552,15 @@ const moveToVoting = (session) => {
     state: 'VOTING',
     match_id: session.matchId
   });
+
+  // AI tự động vote sau delay ngẫu nhiên 5–30 giây
+  const voteDelay = 5000 + Math.random() * 25000;
+  setTimeout(() => {
+    autoVoteForAi(session);
+  }, voteDelay);
 };
 
-const processVoteResult = async (session) => {
+async function processVoteResult(session) {
   console.log('Đang xử lý kết quả vote cho trận:', session.matchId);
   
   const currentVotes = session.votes[session.currentRound] || {};
@@ -578,7 +585,7 @@ const processVoteResult = async (session) => {
   }
 };
 
-const eliminatePlayer = async (session, userId) => {
+async function eliminatePlayer(session, userId) {
   const player = session.players.find(p => p.userId === userId);
   if (player) {
     player.isAlive = false;
@@ -638,7 +645,7 @@ const eliminatePlayer = async (session, userId) => {
   startPhaseTimer(session, session.durations.ROUND_RESULT * 1000, proceedToNextGameStep);
 };
 
-const moveToVoteTie = (session) => {
+async function moveToVoteTie(session) {
   session.state = 'VOTE_TIE';
   
   const tieMsg = {
@@ -668,7 +675,7 @@ const moveToVoteTie = (session) => {
   startPhaseTimer(session, session.durations.VOTE_TIE * 1000, proceedToNextGameStep);
 };
 
-const checkWinCondition = async (session) => {
+async function checkWinCondition(session) {
   const alivePlayers = session.players.filter(p => p.isAlive);
   
   // Đếm số lượng theo phe
@@ -717,7 +724,7 @@ const checkWinCondition = async (session) => {
 /**
  * Chuyển sang phase tiếp theo (Vòng mới hoặc Role Check)
  */
-const proceedToNextGameStep = async (session) => {
+async function proceedToNextGameStep(session) {
   // 1. Kiểm tra thắng thua trước
   const isGameOver = await checkWinCondition(session);
   if (isGameOver) return;
@@ -778,7 +785,7 @@ const startNextRound = async (session) => {
   moveToDescribing(session);
 };
 
-const moveToRoleCheck = async (session) => {
+async function moveToRoleCheck(session) {
   session.state = 'ROLE_CHECK';
   session.roleCheckResults = {}; // Reset kết quả đoán từ vòng trước (nếu có)
 
@@ -815,7 +822,7 @@ const onRoleCheckPhaseEnd = async (session) => {
   await moveToRoleCheckResult(session);
 };
 
-const moveToRoleCheckResult = async (session) => {
+async function moveToRoleCheckResult(session) {
   session.state = 'ROLE_CHECK_RESULT';
   
   // Kiểm tra xem Gián điệp có đoán đúng không
@@ -847,7 +854,7 @@ const moveToRoleCheckResult = async (session) => {
   }, 800);
 };
 
-const broadcastRoleCheckResults = async (session) => {
+async function broadcastRoleCheckResults(session) {
   const aliveHumanPlayers = session.players
     .filter(p => p.isAlive && !p.isAi)
     .map(p => ({
@@ -861,8 +868,8 @@ const broadcastRoleCheckResults = async (session) => {
     if (player.isAi) continue;
 
     // Kiểm tra xem đã đoán chưa. Nếu chưa đoán (hết giờ) thì coi như sai.
-    const hasGuessed = session.roleCheckResults[player.userId] !== undefined;
-    const correct = session.roleCheckResults[player.userId] === true;
+    const hasGuessed = session.roleCheckResults && session.roleCheckResults[player.userId] !== undefined;
+    const correct = session.roleCheckResults && session.roleCheckResults[player.userId] === true;
     const isSpy = String(player.userId) === String(session.spyUserId) || player.role === 'SPY' || player.role === 'INFECTED';
     
     // Nếu chưa đoán, thực hiện trừ điểm ở đây (những người đã đoán đã được cộng/trừ trong submitRoleGuess)
@@ -918,18 +925,15 @@ const broadcastRoleCheckResults = async (session) => {
     console.log(`[ROLE-CHECK-RESULT] Player ${player.displayName} (${isSpy ? 'SPY' : 'CIVILIAN'}): correct=${correct}, coins=${rewardAmount}, abilities=${abilities.length}`);
     getSocketService().emitToUser(player.userId, 'role-check-result', result);
   }
-
-  // Chờ cho đến khi phase kết thúc mới chuyển vòng
-  startPhaseTimer(session, duration * 1000, onRoleCheckResultPhaseEnd);
 };
 
-const onRoleCheckResultPhaseEnd = async (session) => {
+async function onRoleCheckResultPhaseEnd(session) {
   session.roleCheckDone = true;
   // Chuyển bước tiếp theo (Vòng mới hoặc kiểm tra thắng thua)
   await proceedToNextGameStep(session);
 };
 
-const moveToGameOver = async (session, winnerRole) => {
+async function moveToGameOver(session, winnerRole) {
   if (session.state === 'GAME_OVER') return;
   session.state = 'GAME_OVER';
   
@@ -1066,7 +1070,7 @@ const autoDescribeForAi = async (session) => {
   }
 
   // Nếu Spy có kỹ năng thao túng AI, AI sẽ KHÔNG tự động miêu tả.
-  const isAnySpyCorrect = Object.entries(session.roleCheckResults).some(([uid, correct]) => {
+  const isAnySpyCorrect = session.roleCheckResults && Object.entries(session.roleCheckResults).some(([uid, correct]) => {
     const p = session.players.find(player => player.userId === uid);
     return correct && p && (p.role.toUpperCase() === 'SPY' || p.role.toUpperCase() === 'INFECTED');
   });
@@ -1104,15 +1108,70 @@ const autoDiscussForAi = async (session) => {
     return;
   }
 
-  const content = await getAiDescription(session.civilianKeyword, session.currentRound);
+  // Dùng getAiDiscussion với lịch sử chat để AI có câu trả lời phù hợp ngữ cảnh
+  const recentHistory = (session.chatHistory || []).slice(-5); // Lấy 5 tin nhắn gần nhất
+  const content = await getAiDiscussion(session.civilianKeyword, session.currentRound, recentHistory);
   const name = getAnonymousName(ai);
+
   getSocketService().emitToTopic(`/topic/match/${session.matchId}/chat`, {
+    type: 'CHAT',
+    match_id: session.matchId,
     sender_id: ai.userId,
+    user_id: ai.userId,
     sender_name: name,
+    display_name: name,
+    color: 'gray',
     content,
     timestamp: Date.now()
   });
+
+  // Lưu vào lịch sử chat
+  if (!session.chatHistory) session.chatHistory = [];
+  session.chatHistory.push({ sender_name: name, content });
+
   session.aiDiscussUsedThisRound = true;
+};
+
+const autoVoteForAi = async (session) => {
+  if (session.state !== 'VOTING') return;
+  const ai = session.players.find(p => p.isAi && p.isAlive);
+  if (!ai) return;
+
+  const alivePlayers = session.players.filter(p => p.isAlive);
+  const currentDescriptions = session.descriptions[session.currentRound] || {};
+
+  // Lấy descriptions theo displayName để AI hiểu được
+  const descByDisplayName = {};
+  alivePlayers.forEach(p => {
+    if (currentDescriptions[p.userId]) {
+      descByDisplayName[p.userId] = currentDescriptions[p.userId];
+    }
+  });
+
+  try {
+    const targetId = await getAiVoteTarget(alivePlayers, descByDisplayName);
+    if (targetId && targetId !== ai.userId) {
+      console.log(`[AI-VOTE] AI (${ai.displayName}) votes for ${targetId}`);
+
+      if (!session.votes[session.currentRound]) {
+        session.votes[session.currentRound] = {};
+      }
+      session.votes[session.currentRound][ai.userId] = targetId;
+
+      // Broadcast vote update
+      const currentVotes = session.votes[session.currentRound];
+      const voteCounts = {};
+      Object.values(currentVotes).forEach(tid => {
+        voteCounts[tid] = (voteCounts[tid] || 0) + 1;
+      });
+      getSocketService().emitToTopic(`/topic/match/${session.matchId}/votes`, {
+        match_id: session.matchId,
+        voteCounts
+      });
+    }
+  } catch (error) {
+    console.error('[AI-VOTE-ERROR]', error.message);
+  }
 };
 
 const getSession = (matchId) => gameSessions.get(matchId.toString());
@@ -1249,8 +1308,22 @@ module.exports = {
       timestamp: Date.now()
     });
 
-    // AI auto discuss - Đã bị loại bỏ theo yêu cầu: AI không được thảo luận
-    // await autoDiscussForAi(session);
+    // Lưu vào lịch sử chat để AI có ngữ cảnh thảo luận
+    if (!session.chatHistory) session.chatHistory = [];
+    session.chatHistory.push({ sender_name: name, content });
+    // Giữ tối đa 20 tin nhắn gần nhất
+    if (session.chatHistory.length > 20) session.chatHistory.shift();
+
+    // AI tự động phản hồi trong phase DISCUSSING (delay ngẫu nhiên 3–8 giây)
+    if (session.state === 'DISCUSSING' && !session.aiDiscussUsedThisRound) {
+      const discussDelay = 3000 + Math.random() * 5000;
+      setTimeout(() => {
+        const currentSession = gameSessions.get(matchId.toString());
+        if (currentSession && currentSession.state === 'DISCUSSING') {
+          autoDiscussForAi(currentSession);
+        }
+      }, discussDelay);
+    }
   },
   submitVote: async (matchId, voterId, targetId) => {
     const session = getSession(matchId);
