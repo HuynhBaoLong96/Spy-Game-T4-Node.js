@@ -7,15 +7,10 @@ const UserStats = require('../models/UserStats');
 const GameSettings = require('../models/GameSettings');
 const { getRandomKeywordPair, generateHint } = require('./keywordService');
 const { deductEntryFee, addReward } = require('./economyService');
-const { 
-  emitToRoom, 
-  emitToUser, 
-  emitToTopic, 
-  primeSubscription,
-  setMatchData, 
-  removeMatchData 
-} = require('./socketService');
 const { getAiDescription } = require('./aiService');
+
+// Lazy load socketService to avoid circular dependencies
+const getSocketService = () => require('./socketService');
 
 // Lưu trữ các phiên chơi đang diễn ra trong bộ nhớ
 const gameSessions = new Map();
@@ -214,7 +209,7 @@ const startGame = async (roomIdOrCode, hostUserId) => {
   }
 
   // Đăng ký ngay lập tức cho Smart Inject để đảm bảo phase đầu tiên (ROLE_ASSIGN) có từ khóa
-  setMatchData(match._id.toString(), {
+  getSocketService().setMatchData(match._id.toString(), {
     civilianKeyword: session.civilianKeyword,
     spyKeyword: session.spyKeyword,
     spyUserId: session.spyUserId.toString(),
@@ -249,7 +244,7 @@ const startGame = async (roomIdOrCode, hostUserId) => {
   await room.save();
   
   // 9.5 Đăng ký match data cho Smart Broadcast của socketService
-  setMatchData(match._id.toString(), {
+  getSocketService().setMatchData(match._id.toString(), {
     civilianKeyword: session.civilianKeyword,
     spyKeyword: session.spyKeyword,
     spyUserId: session.spyUserId.toString(),
@@ -262,7 +257,7 @@ const startGame = async (roomIdOrCode, hostUserId) => {
   broadcastLobbyRoomEvent(room, 'UPDATED');
 
   // 10. Thông báo bắt đầu game qua Socket
-  emitToRoom(room, 'GAME_START', {
+  getSocketService().emitToRoom(room, 'GAME_START', {
     type: 'GAME_START',
     room_id: roomId,
     match_id: match._id.toString(),
@@ -287,7 +282,7 @@ const broadcastRoles = (session) => {
 
     // Gửi thông tin vai trò riêng tư cho từng người (Java dùng /user/queue/role)
     // Cập nhật để khớp với yêu cầu của user: bao gồm phase và remaining_seconds
-    emitToUser(player.userId, 'role', {
+    getSocketService().emitToUser(player.userId, 'role', {
       phase: 'ROLE_ASSIGN',
       remaining_seconds: session.durations.ROLE_ASSIGN,
       role: player.role.toUpperCase(),
@@ -309,14 +304,13 @@ const broadcastRoles = (session) => {
         display_name: p.displayName,
         color: p.color,
         is_alive: p.isAlive,
-        is_ai: p.isAi,
-        role: 'unknown'
+        is_ai: p.isAi
       }))
     });
   });
 
   // Gửi danh sách người chơi (ẩn vai trò) cho tất cả qua topic match
-  emitToTopic(`/topic/match/${session.matchId}`, {
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}`, {
     type: 'MATCH_UPDATE',
     phase: 'ROLE_ASSIGN',
     state: 'ROLE_ASSIGN',
@@ -342,7 +336,7 @@ const startPhaseTimer = (session, durationMs, nextPhaseFn) => {
   const isDiscussing = phase === 'DISCUSSING';
 
   // Thông báo chuyển phase tới topic match
-  emitToTopic(`/topic/match/${session.matchId}`, {
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}`, {
     type: 'PHASE_UPDATE',
     phase: phase,
     state: phase,
@@ -375,7 +369,7 @@ const startPhaseTimer = (session, durationMs, nextPhaseFn) => {
     const canManipulateAi = isSpyOrInfected && (session.selectedAbility === 'fake_message' || session.selectedAbility === 'MANIPULATE_AI');
     const aiPlayer = session.players.find(player => player.isAi && player.isAlive);
 
-    emitToUser(p.userId, 'role', {
+    getSocketService().emitToUser(p.userId, 'role', {
       phase: phase,
       remaining_seconds: Math.floor(durationMs / 1000),
       your_keyword: keyword,
@@ -497,7 +491,7 @@ const refreshAllDurations = async () => {
 
     // Gửi cập nhật timer mới cho FE ngay lập tức
     const finalRemainingMs = session.phaseEndTime - Date.now();
-    emitToTopic(`/topic/match/${session.matchId}`, {
+    getSocketService().emitToTopic(`/topic/match/${session.matchId}`, {
       type: 'PHASE_UPDATE',
       phase: session.state.toUpperCase(),
       state: session.state.toUpperCase(),
@@ -514,14 +508,14 @@ const moveToDescribing = (session) => {
   
   startPhaseTimer(session, session.durations.DESCRIBING * 1000, moveToDiscussing);
 
-  emitToTopic(`/topic/room/${session.roomId}/state`, {
+  getSocketService().emitToTopic(`/topic/room/${session.roomId}/state`, {
     type: 'PHASE_UPDATE',
     state: 'DESCRIBING',
     match_id: session.matchId,
     room_id: session.roomId
   });
 
-  emitToTopic(`/topic/match/${session.matchId}`, {
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}`, {
     type: 'PHASE_UPDATE',
     state: 'DESCRIBING',
     match_id: session.matchId,
@@ -538,7 +532,7 @@ const moveToDiscussing = (session) => {
   session.currentTurnUserId = null;
   startPhaseTimer(session, session.durations.DISCUSSING * 1000, moveToVoting);
   
-  emitToTopic(`/topic/match/${session.matchId}`, {
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}`, {
     type: 'PHASE_UPDATE',
     phase: 'DISCUSSING',
     state: 'DISCUSSING',
@@ -551,7 +545,7 @@ const moveToVoting = (session) => {
   session.currentTurnUserId = null;
   startPhaseTimer(session, session.durations.VOTING * 1000, processVoteResult);
   
-  emitToTopic(`/topic/match/${session.matchId}`, {
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}`, {
     type: 'PHASE_UPDATE',
     phase: 'VOTING',
     state: 'VOTING',
@@ -599,7 +593,7 @@ const eliminatePlayer = async (session, userId) => {
 
   session.state = 'ROUND_RESULT';
   
-  emitToTopic(`/topic/match/${session.matchId}/round-result`, {
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}/round-result`, {
     type: 'VOTE_RESULT',
     match_id: session.matchId,
     eliminated_user_id: userId,
@@ -616,7 +610,7 @@ const eliminatePlayer = async (session, userId) => {
   });
 
   // Gửi cả lên topic chính match để FE bắt sự kiện dễ hơn
-  emitToTopic(`/topic/match/${session.matchId}`, {
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}`, {
     type: 'VOTE_RESULT',
     match_id: session.matchId,
     eliminated_user_id: userId,
@@ -633,7 +627,7 @@ const eliminatePlayer = async (session, userId) => {
   });
 
   // Gửi thông báo chuyển phase để FE nhận diện được ROUND_RESULT
-  emitToTopic(`/topic/match/${session.matchId}`, {
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}`, {
     type: 'PHASE_UPDATE',
     phase: 'ROUND_RESULT',
     state: 'ROUND_RESULT',
@@ -641,7 +635,7 @@ const eliminatePlayer = async (session, userId) => {
     remaining_seconds: session.durations.ROUND_RESULT
   });
 
-  startPhaseTimer(session, session.durations.ROUND_RESULT * 1000, checkWinCondition);
+  startPhaseTimer(session, session.durations.ROUND_RESULT * 1000, proceedToNextGameStep);
 };
 
 const moveToVoteTie = (session) => {
@@ -659,11 +653,11 @@ const moveToVoteTie = (session) => {
     }
   };
 
-  emitToTopic(`/topic/match/${session.matchId}/round-result`, tieMsg);
-  emitToTopic(`/topic/match/${session.matchId}`, tieMsg);
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}/round-result`, tieMsg);
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}`, tieMsg);
 
   // Gửi thông báo chuyển phase để FE nhận diện được VOTE_TIE
-  emitToTopic(`/topic/match/${session.matchId}`, {
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}`, {
     type: 'PHASE_UPDATE',
     phase: 'VOTE_TIE',
     state: 'VOTE_TIE',
@@ -671,7 +665,7 @@ const moveToVoteTie = (session) => {
     remaining_seconds: session.durations.VOTE_TIE
   });
 
-  startPhaseTimer(session, session.durations.VOTE_TIE * 1000, startNextRound);
+  startPhaseTimer(session, session.durations.VOTE_TIE * 1000, proceedToNextGameStep);
 };
 
 const checkWinCondition = async (session) => {
@@ -691,27 +685,50 @@ const checkWinCondition = async (session) => {
   const spyAliveCount = aliveSpies.length;
   const civilianAliveCount = aliveCivilians.length;
 
-  console.log(`[DEBUG] checkWinCondition matchId=${session.matchId}: Spies=${spyAliveCount}, Civilians=${civilianAliveCount}, Round=${session.currentRound}`);
+  console.log(`[DEBUG] checkWinCondition matchId=${session.matchId}: Spies=${spyAliveCount}, Civilians=${civilianAliveCount}`);
 
   // 1. Nếu phe Gián điệp bị tiêu diệt hết -> Dân thường thắng
   if (spyAliveCount === 0) {
     console.log(`[DEBUG] Phe Gián điệp đã bị loại hết. Dân thường thắng!`);
-    return moveToGameOver(session, 'civilian');
+    await moveToGameOver(session, 'civilian');
+    return true;
   } 
   
   // 2. Nếu số lượng Dân thường nhỏ hơn hoặc bằng số lượng Gián điệp -> Gián điệp thắng
+  // Tuy nhiên, chỉ kết thúc game nếu số người chơi còn lại quá ít để tiếp tục (ví dụ < 2)
+  // hoặc nếu Dân thường không còn cơ hội lật kèo (số lượng dân <= số gián điệp)
   if (civilianAliveCount <= spyAliveCount) {
     console.log(`[DEBUG] Số dân thường (${civilianAliveCount}) <= Số gián điệp (${spyAliveCount}). Gián điệp thắng!`);
-    return moveToGameOver(session, 'spy');
+    await moveToGameOver(session, 'spy');
+    return true;
   } 
-  
-  // 3. Nếu chưa ai thắng, kiểm tra xem có cần chạy Role Check không (chỉ ở vòng 1)
+
+  // 3. Nếu chỉ còn 1 người duy nhất (do những người khác out) -> Người đó thắng (hoặc game hòa)
+  if (alivePlayers.length < 2) {
+    console.log(`[DEBUG] Chỉ còn ${alivePlayers.length} người chơi. Kết thúc game.`);
+    const winner = spyAliveCount > 0 ? 'spy' : 'civilian';
+    await moveToGameOver(session, winner);
+    return true;
+  }
+
+  return false;
+};
+
+/**
+ * Chuyển sang phase tiếp theo (Vòng mới hoặc Role Check)
+ */
+const proceedToNextGameStep = async (session) => {
+  // 1. Kiểm tra thắng thua trước
+  const isGameOver = await checkWinCondition(session);
+  if (isGameOver) return;
+
+  // 2. Nếu chưa ai thắng, kiểm tra xem có cần chạy Role Check không (chỉ ở vòng 1)
   if (session.currentRound === 1 && !session.roleCheckDone) {
     console.log(`[DEBUG] Bắt đầu Role Check cho trận đấu ${session.matchId}`);
     return moveToRoleCheck(session);
   }
 
-  // Nếu không ai thắng, qua vòng mới
+  // 3. Nếu không có gì đặc biệt, qua vòng mới
   console.log(`[DEBUG] Game continues, moving to next round`);
   await startNextRound(session);
 };
@@ -721,7 +738,7 @@ const moveToSpyKeywordGuess = async (session, spyUserId) => {
   session.currentTurnUserId = spyUserId;
   
   // Thông báo cho FE
-  emitToTopic(`/topic/match/${session.matchId}`, {
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}`, {
     type: 'PHASE_UPDATE',
     phase: 'ROLE_CHECK',
     state: 'ROLE_CHECK',
@@ -730,7 +747,7 @@ const moveToSpyKeywordGuess = async (session, spyUserId) => {
   });
 
   // Gửi yêu cầu đoán từ khóa cho Spy
-  emitToUser(spyUserId, 'spy-guess-request', {
+  getSocketService().emitToUser(spyUserId, 'spy-guess-request', {
     message: 'Bạn đã bị loại! Hãy đoán từ khóa của Dân thường để thắng lật kèo.',
     remaining_seconds: session.durations.ROLE_CHECK
   });
@@ -766,7 +783,7 @@ const moveToRoleCheck = async (session) => {
   session.roleCheckResults = {}; // Reset kết quả đoán từ vòng trước (nếu có)
 
   // Gửi thông báo phase rõ ràng cho toàn phòng
-  emitToTopic(`/topic/match/${session.matchId}`, {
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}`, {
     type: 'PHASE_UPDATE',
     phase: 'ROLE_CHECK',
     state: 'ROLE_CHECK',
@@ -780,7 +797,7 @@ const moveToRoleCheck = async (session) => {
   for (const player of session.players) {
     if (player.isAi || !player.isAlive) continue;
     const isSpy = player.role === 'SPY' || player.role === 'INFECTED';
-    emitToUser(player.userId, 'role-check-request', {
+    getSocketService().emitToUser(player.userId, 'role-check-request', {
       type: 'ROLE_CHECK_REQUEST',
       phase: 'ROLE_CHECK',
       remaining_seconds: session.durations.ROLE_CHECK,
@@ -812,7 +829,7 @@ const moveToRoleCheckResult = async (session) => {
     : Math.max(session.durations.ROLE_CHECK_RESULT || 10, 10);
   
   // Gửi PHASE_UPDATE rõ ràng cho FE trước (để FE chuyển sang màn kết quả)
-  emitToTopic(`/topic/match/${session.matchId}`, {
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}`, {
     type: 'PHASE_UPDATE',
     phase: 'ROLE_CHECK_RESULT',
     state: 'ROLE_CHECK_RESULT',
@@ -899,17 +916,21 @@ const broadcastRoleCheckResults = async (session) => {
     session.detailedRoleCheckResults[player.userId] = result;
 
     console.log(`[ROLE-CHECK-RESULT] Player ${player.displayName} (${isSpy ? 'SPY' : 'CIVILIAN'}): correct=${correct}, coins=${rewardAmount}, abilities=${abilities.length}`);
-    emitToUser(player.userId, 'role-check-result', result);
+    getSocketService().emitToUser(player.userId, 'role-check-result', result);
   }
+
+  // Chờ cho đến khi phase kết thúc mới chuyển vòng
+  startPhaseTimer(session, duration * 1000, onRoleCheckResultPhaseEnd);
 };
 
 const onRoleCheckResultPhaseEnd = async (session) => {
   session.roleCheckDone = true;
-  // Bắt đầu vòng mới thay vì chỉ moveToDescribing để reset descriptions
-  await startNextRound(session);
+  // Chuyển bước tiếp theo (Vòng mới hoặc kiểm tra thắng thua)
+  await proceedToNextGameStep(session);
 };
 
 const moveToGameOver = async (session, winnerRole) => {
+  if (session.state === 'GAME_OVER') return;
   session.state = 'GAME_OVER';
   
   await processEndGameRewards(session, winnerRole);
@@ -941,8 +962,8 @@ const moveToGameOver = async (session, winnerRole) => {
   };
 
   // Broadcast kết quả qua cả topic chung và topic chuyên biệt cho game-over
-  emitToTopic(`/topic/match/${session.matchId}/game-over`, gameOverPayload);
-  emitToTopic(`/topic/match/${session.matchId}`, gameOverPayload);
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}/game-over`, gameOverPayload);
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}`, gameOverPayload);
 
   // Cập nhật Match trong DB
   await Match.findByIdAndUpdate(session.matchId, { status: 'completed', winner: winnerRole });
@@ -959,7 +980,7 @@ const moveToGameOver = async (session, winnerRole) => {
   // Xóa session sau 1 phút
   setTimeout(() => {
     gameSessions.delete(session.matchId);
-    removeMatchData(session.matchId);
+    getSocketService().removeMatchData(session.matchId);
   }, 60000);
 };
 
@@ -1085,7 +1106,7 @@ const autoDiscussForAi = async (session) => {
 
   const content = await getAiDescription(session.civilianKeyword, session.currentRound);
   const name = getAnonymousName(ai);
-  emitToTopic(`/topic/match/${session.matchId}/chat`, {
+  getSocketService().emitToTopic(`/topic/match/${session.matchId}/chat`, {
     sender_id: ai.userId,
     sender_name: name,
     content,
@@ -1135,13 +1156,18 @@ const handlePlayerQuit = async (roomIdOrCode, userId) => {
           { matchId: session.matchId, userId: userId },
           { isAlive: false, afk: true }
         );
-        emitToTopic(`/topic/match/${session.matchId}`, {
+        getSocketService().emitToTopic(`/topic/match/${session.matchId}`, {
           type: 'PLAYER_AFK',
           match_id: session.matchId,
           user_id: userId,
           display_name: player.displayName
         });
-        await checkWinCondition(session);
+
+        // Chỉ kiểm tra win condition nếu game đang ở các phase thực sự quan trọng
+        const phase = session.state.toUpperCase();
+        if (['DESCRIBING', 'DISCUSSING', 'VOTING', 'VOTE_TIE', 'ROLE_CHECK', 'ROLE_CHECK_RESULT'].includes(phase)) {
+          await checkWinCondition(session);
+        }
       }
       break;
     }
@@ -1182,7 +1208,7 @@ module.exports = {
     const aiNeedsToDescribe = session.selectedAbility === 'fake_message';
     const totalRequiredCount = aliveHumans.length + (aiNeedsToDescribe ? 1 : 0);
 
-    emitToTopic(`/topic/match/${matchId}/descriptions`, {
+    getSocketService().emitToTopic(`/topic/match/${matchId}/descriptions`, {
       match_id: matchId,
       descriptions: descriptions,
       all_submitted: descriptions.length >= totalRequiredCount
@@ -1211,7 +1237,7 @@ module.exports = {
     const isAnonymizedPhase = session.state.toUpperCase() === 'DISCUSSING';
     const name = isAnonymizedPhase ? 'ĐANG GIẤU MẶT 🎭' : player.displayName;
 
-    emitToTopic(`/topic/match/${matchId}/chat`, {
+    getSocketService().emitToTopic(`/topic/match/${matchId}/chat`, {
       type: 'CHAT',
       match_id: matchId,
       sender_id: userId,
@@ -1245,7 +1271,7 @@ module.exports = {
     });
 
     // Thông báo cập nhật lượt vote
-    emitToTopic(`/topic/match/${matchId}/votes`, {
+    getSocketService().emitToTopic(`/topic/match/${matchId}/votes`, {
       match_id: matchId,
       voteCounts: voteCounts
     });
@@ -1331,7 +1357,7 @@ module.exports = {
     if (!session.detailedRoleCheckResults) session.detailedRoleCheckResults = {};
     session.detailedRoleCheckResults[userId.toString()] = result;
 
-    emitToUser(userId, 'role-check-result', result);
+    getSocketService().emitToUser(userId, 'role-check-result', result);
     console.log(`[ROLE-GUESS] Player ${player.displayName} (${isSpy ? 'SPY' : 'CIVILIAN'}) đoán ${normalizedGuess}: correct=${correct}, coins=${rewardAmount}`);
 
     // Kiểm tra xem tất cả người chơi còn sống (trừ AI) đã đoán xong chưa
@@ -1377,7 +1403,7 @@ module.exports = {
       : abilityType === 'infection' ? 'Tha hóa'
       : 'Không dùng kỹ năng';
 
-    emitToUser(userId, 'ability-result', {
+    getSocketService().emitToUser(userId, 'ability-result', {
       success: true,
       confirmed_ability: abilityType,
       message: `Bạn đã chọn kỹ năng: ${abilityName}`
@@ -1429,7 +1455,7 @@ module.exports = {
       await module.exports.submitDescription(matchId, ai.userId, content);
     } else {
       const name = getAnonymousName(ai);
-      emitToTopic(`/topic/match/${matchId}/chat`, {
+      getSocketService().emitToTopic(`/topic/match/${matchId}/chat`, {
         sender_id: ai.userId,
         sender_name: name,
         content,
@@ -1457,20 +1483,20 @@ module.exports = {
     session.infectedUserId = targetUserId;
 
     // Cập nhật match data cho socketService
-    setMatchData(matchId, {
+    getSocketService().setMatchData(matchId, {
       civilianKeyword: session.civilianKeyword,
       spyKeyword: session.spyKeyword,
       spyUserId: session.spyUserId,
       infectedUserId: session.infectedUserId
     });
 
-    emitToUser(targetUserId, 'infection', {
+    getSocketService().emitToUser(targetUserId, 'infection', {
       type: 'INFECTED',
       spy_keyword: session.spyKeyword,
       message: 'Bạn đã bị Gián điệp lây nhiễm! Hãy giúp Gián điệp chiến thắng.'
     });
 
-    emitToUser(userId, 'ability-result', {
+    getSocketService().emitToUser(userId, 'ability-result', {
       success: true,
       type: 'INFECT',
       message: `Bạn đã lây nhiễm thành công ${target.displayName}`
@@ -1503,7 +1529,7 @@ module.exports = {
     } else if (type === 'DISCUSS') {
       if (session.state !== 'DISCUSSING') throw new Error('Chỉ có thể thảo luận trong giai đoạn thảo luận');
       const name = getAnonymousName(ai);
-      emitToTopic(`/topic/match/${matchId}/chat`, {
+      getSocketService().emitToTopic(`/topic/match/${matchId}/chat`, {
         sender_id: ai.userId,
         sender_name: name,
         content,

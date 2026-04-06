@@ -635,17 +635,26 @@ async function handleAppMessage(sessionId, destination, body, session, headers =
 
 function handleDisconnect(sessionId) {
   const session = sessions.get(sessionId);
-  if (session && session.roomId) {
-    // 1. Xử lý thoát game (Match)
+  
+  // Chỉ xử lý thoát nếu session có đầy đủ thông tin định danh
+  if (session && session.userId && session.roomId) {
+    console.log(`[STOMP] Processing disconnect for user ${session.username} (${session.userId}) in room ${session.roomId}`);
+    
+    // 1. Xử lý thoát game (Match) - Chỉ khi game đang 'playing'
     const { handlePlayerQuit } = require('./gameService');
-    handlePlayerQuit(session.roomId, session.userId).catch(console.error);
+    handlePlayerQuit(session.roomId, session.userId).catch(err => {
+      console.error(`[STOMP] Error in handlePlayerQuit for session ${sessionId}:`, err.message);
+    });
 
     // 2. Xử lý rời phòng (Room)
-    // Rời phòng sẽ tự động broadcast ROOM_UPDATED qua roomService.leaveRoom
     const { leaveRoom } = require('./roomService');
-    leaveRoom(session.roomId, session.userId).catch(console.error);
+    leaveRoom(session.roomId, session.userId).catch(err => {
+      console.error(`[STOMP] Error in leaveRoom for session ${sessionId}:`, err.message);
+    });
+  } else {
+    console.log(`[STOMP] Client disconnected: ${sessionId} (Incomplete session info, skipping leave logic)`);
   }
-  console.log(`[STOMP] Client disconnected: ${sessionId} (User: ${session ? session.username : 'unknown'})`);
+  
   cleanupSession(sessionId);
 }
 
@@ -1037,7 +1046,11 @@ const disconnectUser = (userId) => {
 
 const normalizeIp = (ip) => {
   if (!ip) return ip;
-  return ip.replace('::ffff:', '').replace('::1', '127.0.0.1');
+  // Nếu ip là array (x-forwarded-for có thể là array), lấy cái đầu tiên
+  const ipStr = Array.isArray(ip) ? ip[0] : String(ip);
+  // Nếu ipStr chứa nhiều IP (phân tách bằng dấu phẩy), lấy cái đầu tiên
+  const firstIp = ipStr.split(',')[0].trim();
+  return firstIp.replace('::ffff:', '').replace('::1', '127.0.0.1');
 };
 
 /**

@@ -14,9 +14,9 @@ const {
   useAbility: useAbilityService, 
   adminSetSpy, 
   adjustRewards, 
-  setGameState,
-  primeSubscription 
+  setGameState
 } = require('../services/gameService');
+const { primeSubscription } = require('../services/socketService');
 
 /**
  * @desc    Bắt đầu game
@@ -92,8 +92,11 @@ const getGameStateController = async (req, res, next) => {
 
     // Đăng ký cho WS nhận diện qua hàng đợi subscribe
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-    primeSubscription(ip, `/topic/match/${matchId}`, user._id, user.displayName || user.username);
-    primeSubscription(ip, `/user/queue/role`, user._id, user.displayName || user.username); // Thêm priming cho queue/role
+    const { primeSubscription: prime } = require('../services/socketService');
+    if (typeof prime === 'function') {
+      prime(ip, `/topic/match/${matchId}`, user._id, user.displayName || user.username);
+      prime(ip, `/user/queue/role`, user._id, user.displayName || user.username); // Thêm priming cho queue/role
+    }
 
     // Trả về state phù hợp với người dùng
     const player = session.players.find(p => p.userId === user._id.toString());

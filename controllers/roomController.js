@@ -9,7 +9,7 @@ const {
   getRoomMessages, 
   sendRoomMessage 
 } = require('../services/roomService');
-const { primeSubscription } = require('../services/gameService');
+const { primeSubscription } = require('../services/socketService');
 const Room = require('../models/Room');
 const RoomPlayer = require('../models/RoomPlayer');
 const Match = require('../models/Match');
@@ -84,8 +84,8 @@ const joinRoomController = async (req, res, next) => {
       room_code: room.roomCode,
       current_players: room.currentPlayers,
       players: players.map(p => ({
-        user_id: p.userId.toString(),
-        display_name: p.displayName
+        user_id: p.userId ? p.userId.toString() : '',
+        display_name: p.displayName || p.username || 'Người chơi'
       }))
     });
   } catch (error) {
@@ -151,9 +151,12 @@ const getRoomDetailController = async (req, res, next) => {
 
     // Đăng ký cho WS nhận diện qua hàng đợi subscribe cho topic phòng
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-    primeSubscription(ip, `/topic/room/${room._id.toString()}`, user._id, user.displayName || user.username);
-    primeSubscription(ip, `/topic/room/${room.roomCode}`, user._id, user.displayName || user.username);
-    primeSubscription(ip, `/user/queue/role`, user._id, user.displayName || user.username); // Priming cho cả queue/role
+    const { primeSubscription: prime } = require('../services/socketService');
+    if (typeof prime === 'function') {
+      prime(ip, `/topic/room/${room._id.toString()}`, user._id, user.displayName || user.username);
+      prime(ip, `/topic/room/${room.roomCode}`, user._id, user.displayName || user.username);
+      prime(ip, `/user/queue/role`, user._id, user.displayName || user.username); // Priming cho cả queue/role
+    }
 
     // Thông tin cơ bản
     const responseData = {
@@ -167,11 +170,11 @@ const getRoomDetailController = async (req, res, next) => {
       is_special_round: room.isSpecialRound, // Thêm is_special_round cho FE
       isSpecialRound: room.isSpecialRound,
       players: players.map(p => ({
-        user_id: p.userId.toString(),
-        id: p.userId.toString(), // Thêm id cho FE cũ
-        display_name: p.displayName,
-        username: p.username,
-        isHost: String(p.userId) === String(room.hostId) // Thêm isHost cho Round1Enter
+        user_id: p.userId ? p.userId.toString() : '',
+        id: p.userId ? p.userId.toString() : '', // Thêm id cho FE cũ
+        display_name: p.displayName || p.username || 'Người chơi',
+        username: p.username || 'Người chơi',
+        isHost: p.userId && room.hostId ? String(p.userId) === String(room.hostId) : false // Thêm isHost cho Round1Enter
       }))
     };
 
