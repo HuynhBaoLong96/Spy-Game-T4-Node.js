@@ -13,9 +13,20 @@ const generateRoomCode = () => {
 /**
  * Tạo phòng mới
  */
-const createRoom = async (hostUserId, isPrivate, customRoomCode) => {
+const createRoom = async (hostUserId, isPrivate, customRoomCode, isSpecialRound = false) => {
   const host = await User.findById(hostUserId);
   if (!host) throw new Error('Không tìm thấy người dùng');
+
+  // Kiểm tra xu nếu là phòng đặc biệt
+  if (isSpecialRound) {
+    if (host.balance < 500) {
+      throw new Error('Bạn không đủ xu để tạo phòng đặc biệt (cần 500 xu)');
+    }
+    
+    // Trừ xu người tạo
+    const { deductEntryFee } = require('./economyService');
+    await deductEntryFee(hostUserId, 500, 'Tạo phòng đặc biệt', 'CREATE_ROOM');
+  }
 
   let roomCode = customRoomCode ? customRoomCode.trim().toUpperCase() : generateRoomCode();
   
@@ -28,6 +39,7 @@ const createRoom = async (hostUserId, isPrivate, customRoomCode) => {
     roomCode,
     hostId: hostUserId,
     isPrivate,
+    isSpecialRound,
     status: 'waiting',
     currentPlayers: 0,
     maxPlayers: 6

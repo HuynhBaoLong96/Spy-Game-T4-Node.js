@@ -1,6 +1,19 @@
-const { createRoom, joinRoom, leaveRoom, kickPlayer, transferHost, voteByRoom, getMostVotedResult, getRoomMessages, sendRoomMessage } = require('../services/roomService');
+const { 
+  createRoom, 
+  joinRoom, 
+  leaveRoom, 
+  kickPlayer, 
+  transferHost, 
+  voteByRoom, 
+  getMostVotedResult, 
+  getRoomMessages, 
+  sendRoomMessage 
+} = require('../services/roomService');
+const { primeSubscription } = require('../services/gameService');
 const Room = require('../models/Room');
 const RoomPlayer = require('../models/RoomPlayer');
+const Match = require('../models/Match');
+const MatchPlayer = require('../models/MatchPlayer');
 
 /**
  * @desc    Tạo phòng mới
@@ -8,14 +21,15 @@ const RoomPlayer = require('../models/RoomPlayer');
  */
 const createRoomController = async (req, res, next) => {
   try {
-    const { is_private, room_code } = req.body;
+    const { is_private, room_code, is_special_round } = req.body;
     const user = req.user;
 
-    const room = await createRoom(user._id, is_private, room_code);
+    const room = await createRoom(user._id, is_private, room_code, is_special_round === true);
 
     res.status(201).json({
       room_id: room._id.toString(),
       room_code: room.roomCode,
+      is_special_round: room.isSpecialRound,
       host: {
         user_id: user._id.toString(),
         display_name: user.displayName || user.username
@@ -125,6 +139,7 @@ const getPlayersController = async (req, res, next) => {
 const getRoomDetailController = async (req, res, next) => {
   try {
     const { roomId } = req.params;
+    const user = req.user;
     const room = await Room.findById(roomId);
 
     if (!room) {
@@ -132,9 +147,15 @@ const getRoomDetailController = async (req, res, next) => {
       throw new Error('Không tìm thấy phòng');
     }
 
-    const players = await RoomPlayer.find({ roomId });
+    const players = await RoomPlayer.find({ roomId: room._id });
 
-    res.json({
+    // Đăng ký cho WS nhận diện qua hàng đợi subscribe cho topic phòng
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    primeSubscription(ip, `/topic/room/${room._id.toString()}`, user._id, user.displayName || user.username);
+    primeSubscription(ip, `/topic/room/${room.roomCode}`, user._id, user.displayName || user.username);
+
+    // Thông tin cơ bản
+    const responseData = {
       room_id: room._id.toString(),
       room_code: room.roomCode,
       host_id: room.hostId.toString(),
@@ -147,7 +168,29 @@ const getRoomDetailController = async (req, res, next) => {
         display_name: p.displayName,
         username: p.username
       }))
-    });
+    };
+
+    // Nếu đang chơi, bổ sung thông tin từ Match
+    if (room.status === 'playing') {
+      const match = await Match.findOne({ roomId: room._id, status: 'in_progress' });
+      if (match) {
+        const playerMatch = await MatchPlayer.findOne({ matchId: match._id, userId: user._id });
+        
+        if (playerMatch && playerMatch.role) {
+          const roleUpper = playerMatch.role.toUpperCase();
+          const keyword = (roleUpper === 'SPY' || roleUpper === 'INFECTED') 
+            ? match.spyKeyword 
+            : match.civilianKeyword;
+            
+          responseData.your_keyword = keyword;
+          responseData.yourKeyword = keyword; // Tương thích cả camelCase
+          responseData.keyword = keyword;
+          responseData.your_role = roleUpper;
+        }
+      }
+    }
+
+    res.json(responseData);
   } catch (error) {
     next(error);
   }
@@ -291,7 +334,7 @@ const createSpecialRoomController = async (req, res, next) => {
     const { is_private, room_code } = req.body;
     const user = req.user;
 
-    const room = await createRoom(user._id, is_private ?? false, room_code);
+    const room = await createRoom(user._id, false, room_code, true);
 
     res.status(201).json({
       room_id: room._id.toString(),

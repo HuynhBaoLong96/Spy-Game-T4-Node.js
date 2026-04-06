@@ -5,9 +5,16 @@ const RoomPlayer = require('../models/RoomPlayer');
 const User = require('../models/User');
 const UserStats = require('../models/UserStats');
 const GameSettings = require('../models/GameSettings');
-const { getRandomKeywordPair } = require('./keywordService');
+const { getRandomKeywordPair, generateHint } = require('./keywordService');
 const { deductEntryFee, addReward } = require('./economyService');
-const { emitToRoom, emitToUser, emitToTopic } = require('./socketService');
+const { 
+  emitToRoom, 
+  emitToUser, 
+  emitToTopic, 
+  primeSubscription,
+  setMatchData, 
+  removeMatchData 
+} = require('./socketService');
 const { getAiDescription } = require('./aiService');
 
 // Lưu trữ các phiên chơi đang diễn ra trong bộ nhớ
@@ -93,11 +100,19 @@ const startGame = async (roomIdOrCode, hostUserId) => {
   // 2.5 Lấy cấu hình thời gian
   const durations = await getDurations();
 
+  // 2.7 Chuẩn bị từ khóa và hint (nếu là phòng đặc biệt)
+  const isSpecialRound = room.isSpecialRound || false;
+  const civilianHint = isSpecialRound ? generateHint(keywordPair.civilianKeyword, keywordPair.category) : keywordPair.civilianKeyword;
+  const spyHint = isSpecialRound ? generateHint(keywordPair.spyKeyword, keywordPair.category) : keywordPair.spyKeyword;
+
   // 3. Tạo Match trong DB
   const match = await Match.create({
     roomId,
-    civilianKeyword: keywordPair.civilianKeyword,
-    spyKeyword: keywordPair.spyKeyword,
+    civilianKeyword: civilianHint,
+    spyKeyword: spyHint,
+    realCivilianKeyword: keywordPair.civilianKeyword,
+    realSpyKeyword: keywordPair.spyKeyword,
+    isSpecialRound: isSpecialRound,
     status: 'in_progress'
   });
 
@@ -106,8 +121,11 @@ const startGame = async (roomIdOrCode, hostUserId) => {
     matchId: match._id.toString(),
     roomId,
     roomCode: room.roomCode,
-    civilianKeyword: keywordPair.civilianKeyword,
-    spyKeyword: keywordPair.spyKeyword,
+    isSpecialRound: isSpecialRound,
+    civilianKeyword: civilianHint,
+    spyKeyword: spyHint,
+    realCivilianKeyword: keywordPair.civilianKeyword,
+    realSpyKeyword: keywordPair.spyKeyword,
     currentRound: 1,
     state: 'ROLE_ASSIGN',
     players: [],
@@ -191,6 +209,14 @@ const startGame = async (roomIdOrCode, hostUserId) => {
     console.error('[ERROR] No humans found to assign Spy!');
   }
 
+  // Đăng ký ngay lập tức cho Smart Inject để đảm bảo phase đầu tiên (ROLE_ASSIGN) có từ khóa
+  setMatchData(match._id.toString(), {
+    civilianKeyword: session.civilianKeyword,
+    spyKeyword: session.spyKeyword,
+    spyUserId: session.spyUserId.toString(),
+    infectedUserId: null
+  });
+
   // Reset adminSelectedSpyId sau khi đã dùng để tránh ván sau bị lặp lại nếu chủ phòng quên chọn
   room.adminSelectedSpyId = null;
   await room.save();
@@ -217,6 +243,15 @@ const startGame = async (roomIdOrCode, hostUserId) => {
   room.status = 'playing';
   await room.save();
   
+  // 9.5 Đăng ký match data cho Smart Broadcast của socketService
+  setMatchData(match._id.toString(), {
+    civilianKeyword: session.civilianKeyword,
+    spyKeyword: session.spyKeyword,
+    spyUserId: session.spyUserId.toString(),
+    infectedUserId: session.infectedUserId ? session.infectedUserId.toString() : null,
+    isSpecialRound: session.isSpecialRound
+  });
+
   // Thông báo cho Lobby
   const { broadcastLobbyRoomEvent } = require('./roomService');
   broadcastLobbyRoomEvent(room, 'UPDATED');
@@ -247,8 +282,8 @@ const broadcastRoles = (session) => {
       remaining_seconds: session.durations.ROLE_ASSIGN,
       role: player.role.toUpperCase(),
       your_role: player.role.toUpperCase(),
-      your_keyword: player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
-      keyword: player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
+      your_keyword: (player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
+      keyword: (player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
       match_id: session.matchId,
       round: session.currentRound,
       color: player.color,
@@ -316,14 +351,22 @@ const startPhaseTimer = (session, durationMs, nextPhaseFn) => {
   // Gửi lại keyword riêng cho từng người
   session.players.forEach(p => {
     if (p.isAi) return;
+    
+    // Kiểm tra xem Spy có quyền thao túng AI không
+    const isSpy = p.role.toUpperCase() === 'SPY' || p.role.toUpperCase() === 'INFECTED';
+    const canManipulateAi = isSpy && (session.selectedAbility === 'fake_message' || session.selectedAbility === 'MANIPULATE_AI');
+    const aiPlayer = session.players.find(player => player.isAi && player.isAlive);
+
     emitToUser(p.userId, 'role', {
       phase: phase,
       remaining_seconds: Math.floor(durationMs / 1000),
-      your_keyword: p.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
-      keyword: p.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
+      your_keyword: (p.role.toUpperCase() === 'SPY' || p.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
+      keyword: (p.role.toUpperCase() === 'SPY' || p.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
       your_role: p.role.toUpperCase(),
       role: p.role.toUpperCase(),
-      match_id: session.matchId
+      match_id: session.matchId,
+      can_manipulate_ai: canManipulateAi,
+      ai_user_id: aiPlayer ? aiPlayer.userId : null
     });
   });
 
@@ -819,8 +862,8 @@ const moveToGameOver = async (session, winnerRole) => {
     phase: 'GAME_OVER',
     winner: finalWinner,
     winner_role: finalWinner,
-    civilian_keyword: session.civilianKeyword,
-    spy_keyword: session.spyKeyword,
+    civilian_keyword: session.realCivilianKeyword || session.civilianKeyword,
+    spy_keyword: session.realSpyKeyword || session.spyKeyword,
     match_id: session.matchId,
     spy_user_id: session.spyUserId, // Thêm để FE nhận diện được Spy dễ hơn
     players: session.players.map(p => {
@@ -856,6 +899,7 @@ const moveToGameOver = async (session, winnerRole) => {
   // Xóa session sau 1 phút
   setTimeout(() => {
     gameSessions.delete(session.matchId);
+    removeMatchData(session.matchId);
   }, 60000);
 };
 
@@ -941,15 +985,13 @@ const autoDescribeForAi = async (session) => {
   }
 
   // Nếu Spy có kỹ năng thao túng AI, AI sẽ KHÔNG tự động miêu tả.
-  // Quan trọng: Kiểm tra session.selectedAbility để biết Spy đã chọn kỹ năng chưa.
-  // Hoặc kiểm tra xem có Spy nào đoán đúng không (để tránh AI tự nói khi Spy sắp được thao túng)
   const isAnySpyCorrect = Object.entries(session.roleCheckResults).some(([uid, correct]) => {
     const p = session.players.find(player => player.userId === uid);
-    return correct && p && (p.role === 'SPY' || p.role === 'INFECTED');
+    return correct && p && (p.role.toUpperCase() === 'SPY' || p.role.toUpperCase() === 'INFECTED');
   });
 
-  if (session.selectedAbility === 'fake_message' || (session.currentRound > 1 && isAnySpyCorrect)) {
-    console.log(`[DEBUG] AI im lặng vì đang bị thao túng hoặc chờ thao túng.`);
+  if (session.selectedAbility === 'fake_message' || session.selectedAbility === 'MANIPULATE_AI' || (session.currentRound > 1 && isAnySpyCorrect)) {
+    console.log(`[DEBUG] AI im lặng vì đang bị thao túng hoặc chờ thao túng (ability: ${session.selectedAbility}).`);
     return;
   }
 
@@ -1177,7 +1219,8 @@ module.exports = {
       correct = (isSpy && normalizedGuess === 'SPY') || (!isSpy && normalizedGuess === 'CIVILIAN');
     } else {
       // Đoán từ khóa (giữ logic cũ nếu cần)
-      correct = guess.trim().toLowerCase() === session.civilianKeyword.toLowerCase();
+      const realKeyword = isSpy ? session.realSpyKeyword : session.realCivilianKeyword;
+      correct = guess.trim().toLowerCase() === realKeyword.toLowerCase();
     }
 
     session.roleCheckResults[userId.toString()] = correct; // Lưu kết quả đoán
@@ -1347,6 +1390,14 @@ module.exports = {
     target.role = 'INFECTED';
     session.infectedUserId = targetUserId;
 
+    // Cập nhật match data cho socketService
+    setMatchData(matchId, {
+      civilianKeyword: session.civilianKeyword,
+      spyKeyword: session.spyKeyword,
+      spyUserId: session.spyUserId,
+      infectedUserId: session.infectedUserId
+    });
+
     emitToUser(targetUserId, 'infection', {
       type: 'INFECTED',
       spy_keyword: session.spyKeyword,
@@ -1486,5 +1537,6 @@ module.exports = {
     startPhaseTimer(session, duration, nextFn);
 
     return { success: true, state: session.state };
-  }
+  },
+  primeSubscription: (ip, topic, userId, username) => primeSubscription(ip, topic, userId, username)
 };

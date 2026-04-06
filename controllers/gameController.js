@@ -14,7 +14,8 @@ const {
   useAbility: useAbilityService, 
   adminSetSpy, 
   adjustRewards, 
-  setGameState 
+  setGameState,
+  primeSubscription 
 } = require('../services/gameService');
 
 /**
@@ -89,6 +90,10 @@ const getGameStateController = async (req, res, next) => {
       throw new Error('Không tìm thấy phiên chơi');
     }
 
+    // Đăng ký cho WS nhận diện qua hàng đợi subscribe
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    primeSubscription(ip, `/topic/match/${matchId}`, user._id, user.displayName || user.username);
+
     // Trả về state phù hợp với người dùng
     const player = session.players.find(p => p.userId === user._id.toString());
     const phaseName = session.state.toUpperCase();
@@ -140,9 +145,9 @@ const getGameStateController = async (req, res, next) => {
       }),
       civilian_keyword: phaseName === 'GAME_OVER' ? session.civilianKeyword : undefined,
       spy_keyword: phaseName === 'GAME_OVER' ? session.spyKeyword : undefined,
-      my_keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
-      your_keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
-      keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
+      my_keyword: player && (player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
+      your_keyword: player && (player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
+      keyword: player && (player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
       your_role: player && player.role ? player.role.toUpperCase() : 'UNKNOWN',
       // Thêm thông tin kết quả chọn vai trò để FE có thể hiển thị modal qua API fallback
       personal_role_check_result: session.detailedRoleCheckResults ? session.detailedRoleCheckResults[user._id.toString()] : null

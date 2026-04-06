@@ -89,7 +89,49 @@ const getRandomKeywordPair = async () => {
   return await KeywordPair.findOne().skip(random);
 };
 
+/**
+ * Tạo đoạn mô tả ngắn (hint) cho từ khóa
+ */
+const generateHint = (keyword, category) => {
+  const hints = {
+    "địa điểm": [
+      `Một nơi bạn có thể ghé thăm để giải trí hoặc làm việc.`,
+      `Đây là một địa điểm quen thuộc trong cuộc sống hàng ngày.`,
+      `Bạn thường đến đây khi có nhu cầu cụ thể liên quan đến ${category}.`
+    ],
+    "đồ vật": [
+      `Một vật dụng hữu ích mà con người thường sử dụng.`,
+      `Đồ vật này có thể cầm nắm hoặc điều khiển được.`,
+      `Nó phục vụ cho mục đích sinh hoạt hoặc công việc.`
+    ],
+    "động vật": [
+      `Một loài sinh vật sống trong tự nhiên hoặc được nuôi dưỡng.`,
+      `Loài vật này có những đặc điểm nhận dạng riêng biệt.`,
+      `Nó thuộc nhóm các loài ${category}.`
+    ],
+    "đồ ăn": [
+      `Một món ăn hoặc thức uống phổ biến.`,
+      `Bạn có thể thưởng thức nó để nạp năng lượng.`,
+      `Hương vị của nó rất đặc trưng cho nhóm ${category}.`
+    ],
+    "nghề nghiệp": [
+      `Một công việc mà con người thực hiện để đóng góp cho xã hội.`,
+      `Người làm nghề này cần có kỹ năng và kiến thức chuyên môn.`,
+      `Vị trí này rất quan trọng trong lĩnh vực ${category}.`
+    ],
+    "cảm xúc": [
+      `Trạng thái tâm lý của con người trước một sự việc.`,
+      `Cảm giác này có thể ảnh hưởng đến hành động của bạn.`,
+      `Đây là một cung bậc cảm xúc trong nhóm ${category}.`
+    ]
+  };
+
+  const categoryHints = hints[category] || [`Một khái niệm thuộc lĩnh vực ${category}.`];
+  return categoryHints[Math.floor(Math.random() * categoryHints.length)];
+};
+
 module.exports = {
   seedKeywords,
   getRandomKeywordPair,
+  generateHint
 };

@@ -29,6 +29,10 @@ const roomSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  isSpecialRound: {
+    type: Boolean,
+    default: false
+  },
   adminSelectedSpyId: {
     type: String,
     default: null
