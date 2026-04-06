@@ -9,7 +9,7 @@ const User = require('../models/User');
  */
 const refresh = async (req, res, next) => {
   try {
-    const { refresh_token } = req.body;
+    const { refresh_token } = req.body || {};
     if (!refresh_token) {
       res.status(400);
       throw new Error('Thiếu Refresh Token');
@@ -81,7 +81,7 @@ const logout = async (req, res, next) => {
  */
 const register = async (req, res, next) => {
   try {
-    const { username, email, password, confirm_password, display_name, role } = req.body;
+    const { username, email, password, confirm_password, display_name, role } = req.body || {};
 
     // Kiểm tra xác nhận mật khẩu
     if (password !== confirm_password) {
@@ -124,7 +124,7 @@ const register = async (req, res, next) => {
  */
 const login = async (req, res, next) => {
   try {
-    const { username, email, password } = req.body;
+    const { username, email, password } = req.body || {};
     const identifier = username || email;
 
     if (!identifier || !password) {
@@ -170,7 +170,7 @@ const login = async (req, res, next) => {
  */
 const forgotPassword = async (req, res, next) => {
   try {
-    const { username, email } = req.body;
+    const { username, email } = req.body || {};
     const user = await findByEmail(email);
 
     // Kiểm tra xem email có tồn tại và khớp với username không

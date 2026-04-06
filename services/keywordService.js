@@ -89,7 +89,85 @@ const getRandomKeywordPair = async () => {
   return await KeywordPair.findOne().skip(random);
 };
 
+const generateHint = (keyword, category) => {
+  const hints = {
+    "địa điểm": [
+      `Một địa điểm công cộng nơi mọi người thường xuyên lui tới.`,
+      `Không gian này được thiết kế để phục vụ nhu cầu sinh hoạt hoặc cộng đồng.`,
+      `Đây là một vị trí cố định trên bản đồ với chức năng cụ thể.`,
+      `Nơi này có cấu trúc hạ tầng dành cho nhiều người cùng sử dụng.`,
+      `Một không gian mà bạn có thể ghé thăm để thực hiện các hoạt động xã hội.`,
+      `Vị trí này rất quen thuộc trong môi trường đô thị hoặc khu dân cư.`,
+      `Một cơ sở hạ tầng phục vụ nhu cầu vật chất hoặc tinh thần của bạn.`,
+      `Nơi này được tổ chức để tiếp đón khách hàng hoặc người dân.`
+    ],
+    "đồ vật": [
+      `Một vật dụng hữu ích giúp hỗ trợ con người trong đời sống.`,
+      `Đồ vật này có kích thước và hình dáng phục vụ một mục đích rõ ràng.`,
+      `Bạn có thể tìm thấy vật dụng này trong nhà hoặc tại nơi làm việc.`,
+      `Nó được chế tạo để giúp thực hiện một công việc cụ thể dễ dàng hơn.`,
+      `Một công cụ quen thuộc mà con người thường xuyên tiếp xúc.`,
+      `Đồ vật này có các tính năng đặc thù phục vụ nhu cầu cá nhân.`,
+      `Vật thể này có cấu tạo từ các vật liệu bền vững hoặc nhân tạo.`,
+      `Nó là một phần của bộ trang thiết bị sinh hoạt hàng ngày.`
+    ],
+    "động vật": [
+      `Một loài sinh vật sống với những đặc tính sinh học riêng biệt.`,
+      `Loài vật này đóng một vai trò quan trọng trong hệ sinh thái tự nhiên.`,
+      `Bạn có thể tìm thấy sinh vật này trong tự nhiên hoặc môi trường nuôi dưỡng.`,
+      `Nó có hình dáng và tập tính đặc trưng của nhóm loài này.`,
+      `Một đại diện tiêu biểu của thế giới động vật xung quanh chúng ta.`,
+      `Sinh vật này có những nhu cầu cơ bản để sinh tồn và phát triển.`,
+      `Nó có khả năng tương tác với môi trường theo cách thức riêng.`,
+      `Một loài vật có mặt trong các câu chuyện hoặc đời sống thường nhật.`
+    ],
+    "đồ ăn": [
+      `Một loại thực phẩm cung cấp năng lượng và dưỡng chất cho cơ thể.`,
+      `Món đồ này có hương vị và cách thưởng thức rất đặc trưng.`,
+      `Đây là thứ bạn có thể tìm thấy trong các thực đơn hàng ngày.`,
+      `Một sản phẩm của ẩm thực được chế biến theo quy trình nhất định.`,
+      `Bạn có thể thưởng thức nó để cảm nhận sự đa dạng của ẩm thực.`,
+      `Món này mang lại cảm giác ngon miệng và thỏa mãn vị giác.`,
+      `Nó thuộc nhóm các sản phẩm ăn uống phổ biến.`,
+      `Một thứ thực phẩm có thể tìm thấy tại các cửa hàng hoặc nhà bếp.`
+    ],
+    "nghề nghiệp": [
+      `Một vai trò chuyên môn giúp con người đóng góp cho xã hội.`,
+      `Công việc này đòi hỏi kiến thức và kỹ năng trong một lĩnh vực cụ thể.`,
+      `Người làm nghề này thường có trách nhiệm hỗ trợ cộng đồng.`,
+      `Đây là một vị trí nghề nghiệp ổn định trong cơ cấu xã hội.`,
+      `Một công việc mang lại giá trị kinh tế hoặc tinh thần cho mọi người.`,
+      `Nghề nghiệp này có những tiêu chuẩn đạo đức và kỹ năng riêng.`,
+      `Vị trí này giúp giải quyết các vấn đề phát sinh trong cuộc sống.`,
+      `Một công việc mà bạn cần phải trải qua quá trình đào tạo nhất định.`
+    ],
+    "cảm xúc": [
+      `Một trạng thái tâm lý nảy sinh từ các trải nghiệm cá nhân.`,
+      `Cảm giác này phản ánh thái độ của con người đối với các sự kiện.`,
+      `Đây là một cung bậc cảm xúc phổ biến mà ai cũng từng trải qua.`,
+      `Trạng thái tâm trạng này có thể ảnh hưởng đến cách bạn hành động.`,
+      `Một biểu hiện nội tâm giúp nhận diện cảm nhận của bản thân.`,
+      `Cảm xúc này có thể kéo dài hoặc thay đổi tùy theo hoàn cảnh.`,
+      `Nó đóng vai trò quan trọng trong việc thấu hiểu tâm lý con người.`,
+      `Một trạng thái tinh thần mang sắc thái đặc trưng riêng.`
+    ]
+  };
+
+  const categoryHints = hints[category] || [`Một khái niệm thuộc lĩnh vực ${category}.` ];
+  
+  // Hash keyword để lấy hint khác nhau cho từ khóa khác nhau
+  let hash = 0;
+  for (let i = 0; i < keyword.length; i++) {
+    hash = ((hash << 5) - hash) + keyword.charCodeAt(i);
+    hash |= 0;
+  }
+  
+  const index = Math.abs(hash) % categoryHints.length;
+  return categoryHints[index];
+};
+
 module.exports = {
   seedKeywords,
   getRandomKeywordPair,
+  generateHint
 };

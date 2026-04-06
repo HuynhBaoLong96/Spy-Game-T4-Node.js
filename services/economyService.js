@@ -7,7 +7,7 @@ const getSocketService = () => require('./socketService');
 /**
  * Khấu trừ tiền cược khi bắt đầu ván đấu
  */
-const deductEntryFee = async (userId, fee) => {
+const deductEntryFee = async (userId, fee, description = 'Phí vào cửa ván đấu', type = 'BET') => {
   const user = await User.findById(userId);
   if (!user) throw new Error('Không tìm thấy người dùng');
 
@@ -18,7 +18,7 @@ const deductEntryFee = async (userId, fee) => {
   user.balance -= fee;
   await user.save();
 
-  await logTransaction(userId, -fee, 'BET', 'Phí vào cửa ván đấu');
+  await logTransaction(userId, -fee, type, description);
   
   // Real-time update
   getSocketService().emitToUser(userId, 'balance', { balance: user.balance });
