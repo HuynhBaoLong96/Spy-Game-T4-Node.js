@@ -14,26 +14,27 @@ const socketService = require('../services/socketService');
  */
 const addCoinsToUser = async (req, res, next) => {
   try {
-    console.log('[ADMIN] Received manage-coins request:', req.body);
+    const body = req.body || {};
+    console.log('[ADMIN] Received manage-coins request:', body);
     
     // FE có thể gửi userId (ID) hoặc userIdentifier (Username/Email)
-    const identifier = req.body.userId || req.body.user_id || req.body.identifier || req.body.username;
+    const identifier = body.userId || body.user_id || body.identifier || body.username;
     
     // Đảm bảo identifier là chuỗi để tránh lỗi .match()
     const identifierStr = String(identifier || '').trim();
     
     // Kiểm tra coinsAmount kỹ hơn, cho phép 0 nhưng phải là số
-    let coinsAmount = req.body.amount;
-    if (coinsAmount === undefined) coinsAmount = req.body.coins;
-    if (coinsAmount === undefined) coinsAmount = req.body.amount_to_add;
+    let coinsAmount = body.amount;
+    if (coinsAmount === undefined) coinsAmount = body.coins;
+    if (coinsAmount === undefined) coinsAmount = body.amount_to_add;
     
     // Mặc định cộng vào cả điểm xếp hạng nếu không được chỉ định
-    const addToRanking = req.body.addToRanking !== undefined ? req.body.addToRanking : true;
+    const addToRanking = body.addToRanking !== undefined ? body.addToRanking : true;
     
     if (!identifierStr || coinsAmount === undefined) {
       return res.status(400).json({ 
         message: 'Thiếu thông tin người dùng (ID/Username/Email) hoặc số lượng xu',
-        received: req.body 
+        received: body 
       });
     }
 
@@ -43,7 +44,7 @@ const addCoinsToUser = async (req, res, next) => {
     }
 
     const actionType = numAmount >= 0 ? 'tặng' : 'trừ';
-    const reason = req.body.reason || `Admin ${actionType} xu`;
+    const reason = body.reason || `Admin ${actionType} xu`;
 
     // Tìm kiếm người dùng linh hoạt bằng ID, Username hoặc Email
     let user;

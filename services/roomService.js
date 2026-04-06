@@ -1,7 +1,9 @@
 const Room = require('../models/Room');
 const RoomPlayer = require('../models/RoomPlayer');
 const User = require('../models/User');
-const { emitToRoom, emitToLobby } = require('./socketService');
+
+// Lazy load socketService to avoid circular dependencies
+const getSocketService = () => require('./socketService');
 
 /**
  * Tạo mã phòng ngẫu nhiên 6 ký tự
@@ -24,8 +26,13 @@ const createRoom = async (hostUserId, isPrivate, customRoomCode, isSpecialRound 
     }
     
     // Trừ xu người tạo
-    const { deductEntryFee } = require('./economyService');
-    await deductEntryFee(hostUserId, 500, 'Tạo phòng đặc biệt', 'CREATE_ROOM');
+    try {
+      const economyService = require('./economyService');
+      await economyService.deductEntryFee(hostUserId, 500, 'Tạo phòng đặc biệt', 'CREATE_ROOM');
+    } catch (err) {
+      console.error('[ROOM-SERVICE] Error deducting fee:', err.message);
+      throw new Error(`Trừ xu thất bại: ${err.message}`);
+    }
   }
 
   let roomCode = customRoomCode ? customRoomCode.trim().toUpperCase() : generateRoomCode();
@@ -77,7 +84,7 @@ const joinRoom = async (roomCode, userId) => {
     await room.save();
 
     // Thông báo ngay lập tức cho mọi người trong phòng: có người mới vào
-    emitToRoom(room, 'PLAYER_JOIN', {
+    await getSocketService().emitToRoom(room, 'PLAYER_JOIN', {
       type: 'PLAYER_JOIN',
       user_id: userId.toString(),
       display_name: user.displayName || user.username,
@@ -88,7 +95,7 @@ const joinRoom = async (roomCode, userId) => {
   }
 
   // Broadcast cập nhật đầy đủ danh sách
-  broadcastRoomUpdate(room);
+  await broadcastRoomUpdate(room);
   broadcastLobbyRoomEvent(room, 'UPDATED');
 
   return room;
@@ -112,7 +119,7 @@ const leaveRoom = async (roomId, userId) => {
 
   if (playerCount <= 0) {
     // Phòng trống — thông báo trước khi xóa
-    emitToRoom(room, 'ROOM_CLOSED', {
+    await getSocketService().emitToRoom(room, 'ROOM_CLOSED', {
       type: 'ROOM_CLOSED',
       room_id: roomId.toString()
     });
@@ -131,7 +138,7 @@ const leaveRoom = async (roomId, userId) => {
   await room.save();
 
   // Thông báo ngay: có người rời phòng
-  emitToRoom(room, 'PLAYER_LEAVE', {
+  await getSocketService().emitToRoom(room, 'PLAYER_LEAVE', {
     type: 'PLAYER_LEAVE',
     user_id: userId.toString(),
     display_name: leavingPlayer ? leavingPlayer.displayName : 'Unknown',
@@ -140,7 +147,7 @@ const leaveRoom = async (roomId, userId) => {
     max_players: room.maxPlayers
   });
 
-  broadcastRoomUpdate(room);
+  await broadcastRoomUpdate(room);
   broadcastLobbyRoomEvent(room, 'UPDATED');
 };
 
@@ -171,7 +178,7 @@ const kickPlayer = async (roomId, adminId, targetUserId) => {
   await room.save();
 
   // Thông báo ngay cho tất cả trong phòng (bao gồm cả người bị kick để FE họ nhận được)
-  emitToRoom(room, 'PLAYER_KICKED', {
+  await getSocketService().emitToRoom(room, 'PLAYER_KICKED', {
     type: 'PLAYER_KICKED',
     user_id: targetUserId.toString(),
     target_user_id: targetUserId.toString(), // Thêm target_user_id để khớp với FE logic
@@ -181,13 +188,12 @@ const kickPlayer = async (roomId, adminId, targetUserId) => {
   });
 
   // Gửi thông báo riêng tư cho người bị đuổi (nếu FE đang lắng nghe /user/queue/room-events)
-  const { emitToUser } = require('./socketService');
-  emitToUser(targetUserId, 'room-events', {
+  await getSocketService().emitToUser(targetUserId, 'room-events', {
     type: 'KICKED',
     message: 'Bạn đã bị đuổi ra khỏi phòng chơi'
   });
 
-  broadcastRoomUpdate(room);
+  await broadcastRoomUpdate(room);
   broadcastLobbyRoomEvent(room, 'UPDATED');
 };
 
@@ -217,7 +223,7 @@ const transferHost = async (roomId, currentHostId, newHostId) => {
 
 const broadcastRoomUpdate = async (room) => {
   const players = await RoomPlayer.find({ roomId: room._id });
-  emitToRoom(room, 'ROOM_UPDATE', {
+  await getSocketService().emitToRoom(room, 'ROOM_UPDATE', {
     type: 'ROOM_UPDATE',
     room_id: room._id.toString(),
     room_code: room.roomCode,
@@ -238,7 +244,7 @@ const broadcastLobbyRoomEvent = (room, eventType) => {
   if (!room) return;
   
   // Java FE mong đợi cấu trúc: { type, room_id, room_code, current_players, max_players, status, is_private }
-  emitToLobby('LOBBY_ROOM_EVENT', {
+  getSocketService().emitToLobby('LOBBY_ROOM_EVENT', {
     type: eventType === 'DELETED' ? 'ROOM_DELETED' : 'ROOM_UPDATED',
     room_id: room._id ? room._id.toString() : null,
     room_code: room.roomCode,
@@ -262,7 +268,7 @@ module.exports = {
     if (!room) return { success: false };
     
     // Tạm thời emit socket cho đơn giản
-    emitToRoom(room, 'ROOM_VOTE', {
+    await getSocketService().emitToRoom(room, 'ROOM_VOTE', {
       voter_id: voterId,
       target_id: targetId
     });
@@ -296,7 +302,7 @@ module.exports = {
       timestamp: new Date().toISOString()
     };
     
-    emitToRoom(room, 'CHAT', message);
+    await getSocketService().emitToRoom(room, 'CHAT', message);
     return message;
   }
 };

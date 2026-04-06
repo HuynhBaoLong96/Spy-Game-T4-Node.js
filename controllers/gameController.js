@@ -64,7 +64,7 @@ const startGameController = async (req, res, next) => {
 const adminSetSpyController = async (req, res, next) => {
   try {
     const { roomId } = req.params;
-    const { user_id } = req.body;
+    const { user_id } = req.body || {};
     const user = req.user;
 
     await adminSetSpy(roomId, user._id, user_id);
@@ -93,6 +93,7 @@ const getGameStateController = async (req, res, next) => {
     // Đăng ký cho WS nhận diện qua hàng đợi subscribe
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     primeSubscription(ip, `/topic/match/${matchId}`, user._id, user.displayName || user.username);
+    primeSubscription(ip, `/user/queue/role`, user._id, user.displayName || user.username); // Thêm priming cho queue/role
 
     // Trả về state phù hợp với người dùng
     const player = session.players.find(p => p.userId === user._id.toString());
@@ -112,6 +113,10 @@ const getGameStateController = async (req, res, next) => {
     
     const currentDescriptions = session.descriptions[session.currentRound] || {};
     
+    // Logic "đánh tráo" is_special_round để FE hiện khung to ở phase đầu
+    const isSpecialRound = session.isSpecialRound || false;
+    const shouldShowSpecialUI = isSpecialRound && phaseName !== 'ROLE_ASSIGN';
+
     res.json({
       match_id: session.matchId,
       room_id: session.roomId,
@@ -123,6 +128,8 @@ const getGameStateController = async (req, res, next) => {
       phase_start_time: session.phaseStartTime,
       phase_end_time: session.phaseEndTime,
       remaining_seconds: Math.max(0, Math.floor((session.phaseEndTime - Date.now()) / 1000)),
+      is_special_round: shouldShowSpecialUI,
+      isSpecialRound: shouldShowSpecialUI,
       players: session.players.map(p => {
         const roleUpper = p.role.toUpperCase();
         const isMe = p.userId === user._id.toString();
@@ -138,7 +145,9 @@ const getGameStateController = async (req, res, next) => {
           is_ai: p.isAi,
           // Trả về role in uppercase để FE dễ so sánh
           role: showRole ? roleUpper : 'hidden',
-          description: currentDescriptions[p.userId] || null,
+          keyword: isMe ? (player && (player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword) : 'hidden',
+          my_keyword: isMe ? (player && (player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword) : 'hidden',
+          description: currentDescriptions[p.userId] || (isMe ? (player && (player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword) : null),
           score: scoreValue,
           score_gained: scoreValue
         };
@@ -148,6 +157,8 @@ const getGameStateController = async (req, res, next) => {
       my_keyword: player && (player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
       your_keyword: player && (player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
       keyword: player && (player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
+      description: player && (player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
+      your_description: player && (player.role.toUpperCase() === 'SPY' || player.role.toUpperCase() === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
       your_role: player && player.role ? player.role.toUpperCase() : 'UNKNOWN',
       // Thêm thông tin kết quả chọn vai trò để FE có thể hiển thị modal qua API fallback
       personal_role_check_result: session.detailedRoleCheckResults ? session.detailedRoleCheckResults[user._id.toString()] : null
@@ -164,7 +175,7 @@ const getGameStateController = async (req, res, next) => {
 const submitChatController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const { content } = req.body;
+    const { content } = req.body || {};
     const user = req.user;
 
     await submitChat(matchId, user._id, content);
@@ -182,7 +193,8 @@ const submitChatController = async (req, res, next) => {
 const submitRoleGuessController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const guessed_role = req.body.guessed_role || req.body.role;
+    const body = req.body || {};
+    const guessed_role = body.guessed_role || body.role;
     const user = req.user;
 
     const result = await submitRoleGuess(matchId, user._id, guessed_role);
@@ -200,7 +212,7 @@ const submitRoleGuessController = async (req, res, next) => {
 const confirmSpyAbilityController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const { ability_type } = req.body;
+    const { ability_type } = req.body || {};
     const user = req.user;
 
     const result = await confirmSpyAbility(matchId, user._id, ability_type);
@@ -218,7 +230,7 @@ const confirmSpyAbilityController = async (req, res, next) => {
 const useFakeMessageController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const { content } = req.body;
+    const { content } = req.body || {};
     const user = req.user;
 
     const result = await useFakeMessageAbility(matchId, user._id, content);
@@ -236,7 +248,8 @@ const useFakeMessageController = async (req, res, next) => {
 const infectPlayerController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const target_user_id = req.body.target_user_id || req.body.target_id || req.body.targetId;
+    const body = req.body || {};
+    const target_user_id = body.target_user_id || body.target_id || body.targetId;
     const user = req.user;
 
     const result = await infectPlayer(matchId, user._id, target_user_id);
@@ -254,7 +267,7 @@ const infectPlayerController = async (req, res, next) => {
 const adjustRewardsController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const { civilian, spy, infected } = req.body;
+    const { civilian, spy, infected } = req.body || {};
     const admin = req.user;
 
     const result = await adjustRewards(matchId, admin._id, civilian, spy, infected);
@@ -272,7 +285,7 @@ const adjustRewardsController = async (req, res, next) => {
 const setGameStateController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const { state } = req.body;
+    const { state } = req.body || {};
     
     const result = await setGameState(matchId, state);
 
@@ -289,14 +302,14 @@ const setGameStateController = async (req, res, next) => {
 const submitDescriptionController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const { content } = req.body;
+    const { content } = req.body || {};
     const user = req.user;
 
     await submitDescription(matchId, user._id, content);
 
     res.json({
       submitted: true,
-      word_count: content.trim().split(/\s+/).length
+      word_count: content ? content.trim().split(/\s+/).length : 0
     });
   } catch (error) {
     next(error);
@@ -310,7 +323,8 @@ const submitDescriptionController = async (req, res, next) => {
 const submitVoteController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const target_user_id = req.body.target_user_id || req.body.target_id || req.body.targetId;
+    const body = req.body || {};
+    const target_user_id = body.target_user_id || body.target_id || body.targetId;
     const user = req.user;
 
     await submitVote(matchId, user._id, target_user_id);
@@ -328,7 +342,7 @@ const submitVoteController = async (req, res, next) => {
 const useAiManipulationController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const { type, content } = req.body; // type: 'DESCRIBE' hoặc 'DISCUSS'
+    const { type, content } = req.body || {}; // type: 'DESCRIBE' hoặc 'DISCUSS'
     const user = req.user;
 
     const result = await useAiManipulationAbility(matchId, user._id, type, content);
@@ -346,7 +360,7 @@ const useAiManipulationController = async (req, res, next) => {
 const useAbilityController = async (req, res, next) => {
   try {
     const { matchId } = req.params;
-    const { type, content } = req.body;
+    const { type, content } = req.body || {};
     const user = req.user;
 
     const result = await useAbilityService(matchId, user._id, type, content);

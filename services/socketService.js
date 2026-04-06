@@ -12,7 +12,7 @@ const WebSocket = require('ws');
 
 let wss = null;
 
-// sessionId -> { ws, userId, roomId, username, subscriptions: Map(subId -> destination) }
+// sessionId -> { ws, userId, roomId, username, subscriptions: Map(subId -> destination), roomCode, stickyKeywordData }
 const sessions = new Map();
 // userId -> Set(sessionId)
 const userToSessions = new Map();
@@ -215,37 +215,64 @@ async function handleSubscribe(sessionId, headers) {
   const session = sessions.get(sessionId);
   if (!session) return;
 
-  // ── Chống duplicate subscribe ──────────────────────────────────────────────
-  // Frontend đôi khi gọi subscribe nhiều lần cùng destination (reconnect).
-  // Kiểm tra xem đã có subscription cho destination này chưa.
   const alreadySubscribed = [...session.subscriptions.values()].includes(destination);
-  if (alreadySubscribed) {
-    console.log(`[STOMP] DUPLICATE subscribe ignored: ${sessionId} -> ${destination}`);
-    // Vẫn response bình thường nhưng không thêm vào map nữa
-    return;
+  if (!alreadySubscribed) {
+    session.subscriptions.set(subscriptionId, destination);
+
+    const normalized = normalizeTopic(destination);
+    if (!topicSubscribers.has(normalized)) topicSubscribers.set(normalized, new Set());
+    topicSubscribers.get(normalized).add(sessionId);
+
+    console.log(`[STOMP] Subscribed: ${sessionId} -> ${destination} (id=${subscriptionId})`);
   }
 
-  session.subscriptions.set(subscriptionId, destination);
-
   const normalized = normalizeTopic(destination);
-  if (!topicSubscribers.has(normalized)) topicSubscribers.set(normalized, new Set());
-  topicSubscribers.get(normalized).add(sessionId);
-
-  console.log(`[STOMP] Subscribed: ${sessionId} -> ${destination} (id=${subscriptionId})`);
 
   // ── AUTO-IDENTIFY BY PENDING SUBSCRIPTION (For Localhost / No-Token) ──────
   if (!session.userId && session.ip) {
     const normalizedIp = normalizeIp(session.ip);
-    const key = `${normalizedIp}|${normalized}`;
-    const queue = pendingSubscriptions.get(key);
+    
+    // Thử khớp chính xác trước
+    let key = `${normalizedIp}|${normalized}`;
+    let queue = pendingSubscriptions.get(key);
+    
+    // Nếu không khớp, thử khớp theo bất kỳ topic nào từ IP này (Linh hoạt nhất cho Localhost)
+    if (!queue || queue.length === 0) {
+      // Tìm bất kỳ queue nào có prefix là IP này
+      for (const [qKey, qValue] of pendingSubscriptions.entries()) {
+        if (qKey.startsWith(`${normalizedIp}|`) && qValue.length > 0) {
+          queue = qValue;
+          key = qKey;
+          break;
+        }
+      }
+    }
+
     if (queue && queue.length > 0) {
       const { userId, username } = queue.shift();
       session.userId = userId;
       session.username = username;
       if (!userToSessions.has(userId)) userToSessions.set(userId, new Set());
       userToSessions.get(userId).add(sessionId);
-      console.log(`[STOMP] Identified session ${sessionId} as ${username} (${userId}) via pending queue for ${normalized}`);
+      console.log(`[STOMP] Identified session ${sessionId} as ${username} (${userId}) via pending queue for ${key}`);
       
+      // ── SET STICKY KEYWORD IMMEDIATELY UPON IDENTIFICATION ──
+      const parts = normalized.split('/');
+      if (normalized.startsWith('/topic/match/') && parts.length >= 4) {
+        const matchId = parts[3];
+        const mData = matchDataRegistry.get(matchId);
+        if (mData) {
+          const userIdStr = String(userId);
+          const spyIdStr = mData.spyUserId ? String(mData.spyUserId) : null;
+          const infectedIdStr = mData.infectedUserId ? String(mData.infectedUserId) : null;
+          const isSpy = userIdStr === spyIdStr || userIdStr === infectedIdStr;
+          const keyword = isSpy ? mData.spyKeyword : mData.civilianKeyword;
+          const role = isSpy ? (userIdStr === infectedIdStr ? 'INFECTED' : 'SPY') : 'CIVILIAN';
+          session.stickyKeywordData = { keyword, role, matchId };
+          console.log(`[STOMP] Sticky keyword initialized for ${username} in match ${matchId}`);
+        }
+      }
+
       if (queue.length === 0) pendingSubscriptions.delete(key);
     }
   }
@@ -263,57 +290,65 @@ async function handleSubscribe(sessionId, headers) {
         const Match = require('../models/Match');
         const match = await Match.findById(matchId);
         if (match) {
-          mData = {
-            civilianKeyword: match.civilianKeyword,
-            spyKeyword: match.spyKeyword,
-            spyUserId: match.spyUserId ? match.spyUserId.toString() : null,
-            infectedUserId: match.infectedUserId ? match.infectedUserId.toString() : null,
-            isSpecialRound: match.isSpecialRound || false
-          };
-          matchDataRegistry.set(matchId, mData);
-          console.log(`[STOMP] Recovered match data for ${matchId} from DB.`);
-        }
-      }
-
-      // Push current game state for this match
-      setImmediate(async () => {
-        try {
-          const { getSession } = require('./gameService');
-          const gameSession = getSession(matchId);
-          if (gameSession) {
-            const phaseName = gameSession.state.toUpperCase();
-            
-            let currentUserId = session.userId;
-            let keyword = '???';
-            let role = 'CIVILIAN';
-            
-            if (mData && currentUserId) {
-              const userIdStr = String(currentUserId);
-              const isSpy = userIdStr === String(mData.spyUserId) || 
-                            (mData.infectedUserId && userIdStr === String(mData.infectedUserId));
-              keyword = isSpy ? mData.spyKeyword : mData.civilianKeyword;
-              role = isSpy ? (mData.infectedUserId && userIdStr === String(mData.infectedUserId) ? 'INFECTED' : 'SPY') : 'CIVILIAN';
+              mData = {
+                civilianKeyword: match.civilianKeyword,
+                spyKeyword: match.spyKeyword,
+                spyUserId: match.spyUserId ? match.spyUserId.toString() : null,
+                infectedUserId: match.infectedUserId ? match.infectedUserId.toString() : null,
+                isSpecialRound: match.isSpecialRound || false
+              };
+              matchDataRegistry.set(matchId, mData);
+              console.log(`[STOMP] Recovered match data for ${matchId} from DB.`);
             }
-
-            sendToSession(sessionId, destination, {
-              type: 'MATCH_UPDATE',
-              phase: phaseName,
-              state: phaseName,
-              remaining_seconds: Math.max(0, Math.floor((gameSession.phaseEndTime - Date.now()) / 1000)),
-              your_keyword: keyword,
-              yourKeyword: keyword,
-              keyword: keyword,
-              your_role: role,
-              role: role,
-              match_id: matchId,
-              room_id: gameSession.roomId
-            });
-            console.log(`[STOMP] Initial push MATCH_UPDATE for session ${sessionId} (User=${currentUserId || '?'}, Keyword=${keyword})`);
           }
-        } catch (err) {
-          console.error('[STOMP] Initial match push error:', err.message);
-        }
-      });
+
+          // Push current game state for this match
+          setImmediate(async () => {
+            try {
+              const { getSession } = require('./gameService');
+              const gameSession = getSession(matchId);
+              if (gameSession) {
+                const phaseName = gameSession.state.toUpperCase();
+                
+                let currentUserId = session.userId;
+                
+                // CHỈ push nếu đã định danh được người dùng
+                if (mData && currentUserId) {
+                  const userIdStr = String(currentUserId);
+                  const isSpy = userIdStr === String(mData.spyUserId) || 
+                                (mData.infectedUserId && userIdStr === String(mData.infectedUserId));
+                  const keyword = isSpy ? mData.spyKeyword : mData.civilianKeyword;
+                  const role = isSpy ? (mData.infectedUserId && userIdStr === String(mData.infectedUserId) ? 'INFECTED' : 'SPY') : 'CIVILIAN';
+                  
+                  // KHÔNG dùng mData.isSpecialRound ở đây nếu đang ở phase đầu để FE hiện khung to
+                  const phase = phaseName.toUpperCase();
+                  const isSpecial = mData.isSpecialRound && phase !== 'ROLE_ASSIGN';
+
+                  sendToSession(sessionId, destination, {
+                    type: 'MATCH_UPDATE',
+                    phase: phaseName,
+                    state: phaseName,
+                    remaining_seconds: Math.max(0, Math.floor((gameSession.phaseEndTime - Date.now()) / 1000)),
+                    your_keyword: keyword,
+                    yourKeyword: keyword,
+                    keyword: keyword,
+                    my_keyword: keyword,
+                    your_description: keyword,
+                    description: keyword,
+                    your_role: role,
+                    role: role,
+                    match_id: matchId,
+                    room_id: gameSession.roomId,
+                    is_special_round: isSpecial,
+                    isSpecialRound: isSpecial
+                  });
+                  console.log(`[STOMP] Initial push MATCH_UPDATE for session ${sessionId} (User=${session.username}, Keyword=${keyword})`);
+                }
+              }
+            } catch (err) {
+              console.error('[STOMP] Initial match push error:', err.message);
+            }
+          });
     }
   }
 
@@ -682,28 +717,46 @@ async function broadcastToTopic(destination, data) {
   // ── FALLBACK: Fetch mData once if this is a match topic ─────────
   let mData = null;
   let matchId = null;
+
+  // Early parse dataObj to check for match_id in the payload itself
+  let dataObj = typeof data === 'string' ? null : data;
+  if (typeof data === 'string') {
+    try { dataObj = JSON.parse(data); } catch(e) {}
+  }
+
+  // Determine matchId from topic OR from dataObj
   if (normalizedDestination.startsWith('/topic/match/')) {
     const parts = normalizedDestination.split('/');
     if (parts.length >= 4) {
       matchId = parts[3];
-      mData = matchDataRegistry.get(matchId);
-      if (!mData) {
-        console.log(`[STOMP][broadcast] Match ${matchId} NOT in registry. Fetching from DB...`);
-        try {
-          const Match = require('../models/Match');
-          const matchDoc = await Match.findById(matchId);
-          if (matchDoc) {
-            mData = {
-              civilianKeyword: matchDoc.civilianKeyword,
-              spyKeyword: matchDoc.spyKeyword,
-              spyUserId: matchDoc.spyUserId ? matchDoc.spyUserId.toString() : null,
-              infectedUserId: matchDoc.infectedUserId ? matchDoc.infectedUserId.toString() : null
-            };
-            matchDataRegistry.set(matchId, mData);
-          }
-        } catch (e) {
-          console.error(`[STOMP][broadcast] DB error for ${matchId}:`, e.message);
+    }
+  }
+  
+  // Also check in the payload (for /topic/room/... messages that carry match_id)
+  if (!matchId && dataObj && (dataObj.match_id || dataObj.matchId)) {
+    matchId = dataObj.match_id || dataObj.matchId;
+  }
+
+  if (matchId) {
+    matchId = matchId.toString();
+    mData = matchDataRegistry.get(matchId);
+    if (!mData) {
+      console.log(`[STOMP][broadcast] Match ${matchId} NOT in registry. Fetching from DB...`);
+      try {
+        const Match = require('../models/Match');
+        const matchDoc = await Match.findById(matchId);
+        if (matchDoc) {
+          mData = {
+            civilianKeyword: matchDoc.civilianKeyword,
+            spyKeyword: matchDoc.spyKeyword,
+            spyUserId: matchDoc.spyUserId ? matchDoc.spyUserId.toString() : null,
+            infectedUserId: matchDoc.infectedUserId ? matchDoc.infectedUserId.toString() : null,
+            isSpecialRound: matchDoc.isSpecialRound || false
+          };
+          matchDataRegistry.set(matchId, mData);
         }
+      } catch (e) {
+        console.error(`[STOMP][broadcast] DB error for ${matchId}:`, e.message);
       }
     }
   }
@@ -728,30 +781,32 @@ async function broadcastToTopic(destination, data) {
 
     // ── SMART INJECT KEYWORD FOR MATCH TOPICS ──
     let finalData = data;
-    // Nếu data là string (đã JSON.stringify), parse ra để xử lý
-    let dataObj = typeof data === 'string' ? null : data;
-    if (typeof data === 'string') {
-      try { dataObj = JSON.parse(data); } catch(e) {}
-    }
+    // (dataObj already parsed above)
 
     if (dataObj && typeof dataObj === 'object' && mData) {
       // Đảm bảo session có userId (thử nhận diện qua queue nếu mất)
       let effectiveUserId = session.userId;
       if (!effectiveUserId && session.ip) {
         const normalizedIp = normalizeIp(session.ip);
-        const key = `${normalizedIp}|${normalizedDestination}`;
-        const queue = pendingSubscriptions.get(key);
-        if (queue && queue.length > 0) {
-          const { userId, username } = queue.shift();
-          session.userId = userId;
-          session.username = username;
-          if (!userToSessions.has(userId)) userToSessions.set(userId, new Set());
-          userToSessions.get(userId).add(sessionId);
-          effectiveUserId = userId;
-          console.log(`[STOMP][broadcast] Late-identified session ${sessionId} as ${username} via queue`);
-          if (queue.length === 0) pendingSubscriptions.delete(key);
+        
+        // Tìm bất kỳ queue nào có prefix là IP này
+        for (const [qKey, qValue] of pendingSubscriptions.entries()) {
+          if (qKey.startsWith(`${normalizedIp}|`) && qValue.length > 0) {
+            const { userId, username } = qValue.shift();
+            session.userId = userId;
+            session.username = username;
+            if (!userToSessions.has(userId)) userToSessions.set(userId, new Set());
+            userToSessions.get(userId).add(sessionId);
+            effectiveUserId = userId;
+            console.log(`[STOMP][broadcast] Late-identified session ${sessionId} as ${username} via queue`);
+            if (qValue.length === 0) pendingSubscriptions.delete(qKey);
+            break;
+          }
         }
       }
+
+      let keyword = null;
+      let role = null;
 
       if (effectiveUserId) {
         const userIdStr = String(effectiveUserId);
@@ -759,20 +814,38 @@ async function broadcastToTopic(destination, data) {
         const infectedIdStr = mData.infectedUserId ? String(mData.infectedUserId) : null;
         
         const isSpy = userIdStr === spyIdStr || userIdStr === infectedIdStr;
-        const keyword = isSpy ? mData.spyKeyword : mData.civilianKeyword;
-        const role = isSpy ? (userIdStr === infectedIdStr ? 'INFECTED' : 'SPY') : 'CIVILIAN';
+        keyword = isSpy ? mData.spyKeyword : mData.civilianKeyword;
+        role = isSpy ? (userIdStr === infectedIdStr ? 'INFECTED' : 'SPY') : 'CIVILIAN';
         
-        console.log(`[STOMP][SmartInject] User=${session.username || effectiveUserId} isSpy=${isSpy} keyword=${keyword} role=${role}`);
+        // Lưu lại để dùng sau nếu bị mất định danh (Sticky Keyword)
+        session.stickyKeywordData = { keyword, role, matchId };
+      } else if (session.stickyKeywordData && session.stickyKeywordData.matchId === matchId) {
+        // Fallback dùng Sticky Keyword nếu matchId khớp
+        keyword = session.stickyKeywordData.keyword;
+        role = session.stickyKeywordData.role;
+        console.log(`[STOMP][SmartInject] Using STICKY keyword for session ${sessionId}`);
+      }
+
+      if (keyword) {
+        // Không gửi is_special_round = true trong phase ROLE_ASSIGN hoặc khi vừa bắt đầu để FE hiện khung to ở giữa
+        const phase = (dataObj.phase || dataObj.state || '').toUpperCase();
+        const type = (dataObj.type || '').toUpperCase();
+        const shouldShowSpecialUI = mData.isSpecialRound && phase !== 'ROLE_ASSIGN' && type !== 'GAME_START';
+
+        console.log(`[STOMP][SmartInject] User=${session.username || effectiveUserId || 'UNKNOWN'} isSpy=${role!=='CIVILIAN'} phase=${phase} specialUI=${shouldShowSpecialUI}`);
         
         finalData = {
           ...dataObj,
           your_keyword: keyword,
           yourKeyword: keyword,
           keyword: keyword,
+          my_keyword: keyword,
+          your_description: keyword,
+          description: keyword,
           your_role: role,
           role: role,
-          is_special_round: mData.isSpecialRound || false,
-          isSpecialRound: mData.isSpecialRound || false
+          is_special_round: shouldShowSpecialUI,
+          isSpecialRound: shouldShowSpecialUI
         };
       }
     }
@@ -799,7 +872,8 @@ const init = (server) => {
 
   wss.on('connection', async (ws, req) => {
     const sessionId = generateSessionId();
-    const ip = req.socket.remoteAddress;
+    // Ưu tiên x-forwarded-for để hỗ trợ ngrok/proxy
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
     // Thử lấy token từ query string (e.g. /ws?token=xxx)
     const url = require('url');
@@ -912,7 +986,7 @@ const emitToUser = (userId, topic, data) => {
  * Gửi tới tất cả người trong phòng qua roomCode và roomId.
  * Hỗ trợ linh hoạt: có thể truyền roomCode (string), roomId (string) hoặc room object (mongoose).
  */
-const emitToRoom = (roomOrIdOrCode, event, data) => {
+const emitToRoom = async (roomOrIdOrCode, event, data) => {
   if (!roomOrIdOrCode) return;
 
   const targets = new Set();
@@ -926,14 +1000,14 @@ const emitToRoom = (roomOrIdOrCode, event, data) => {
     targets.add(roomOrIdOrCode.toString());
   }
 
-  targets.forEach(target => {
+  for (const target of targets) {
     // Chỉ gửi cho topic chính mà FE đang subscribe: /topic/room/{roomId}
     // Không gửi cho cả roomCode và roomId cùng lúc để tránh lặp tin nhắn
-    emitToTopic(`/topic/room/${target}`, data);
+    await emitToTopic(`/topic/room/${target}`, data);
 
     // Tương thích ngược nếu FE cũ đang dùng số nhiều
     // emitToTopic(`/topic/rooms/${target}`, data);
-  });
+  }
 };
 
 /**

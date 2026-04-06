@@ -21,10 +21,10 @@ const MatchPlayer = require('../models/MatchPlayer');
  */
 const createRoomController = async (req, res, next) => {
   try {
-    const { is_private, room_code, is_special_round } = req.body;
+    const { is_private, room_code, is_special_round } = req.body || {};
     const user = req.user;
 
-    const room = await createRoom(user._id, is_private, room_code, is_special_round === true);
+    const room = await createRoom(user._id, is_private === true || is_private === 'true', room_code, is_special_round === true || is_special_round === 'true');
 
     res.status(201).json({
       room_id: room._id.toString(),
@@ -153,6 +153,7 @@ const getRoomDetailController = async (req, res, next) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     primeSubscription(ip, `/topic/room/${room._id.toString()}`, user._id, user.displayName || user.username);
     primeSubscription(ip, `/topic/room/${room.roomCode}`, user._id, user.displayName || user.username);
+    primeSubscription(ip, `/user/queue/role`, user._id, user.displayName || user.username); // Priming cho cả queue/role
 
     // Thông tin cơ bản
     const responseData = {
@@ -163,10 +164,14 @@ const getRoomDetailController = async (req, res, next) => {
       max_players: room.maxPlayers,
       status: room.status,
       is_private: room.isPrivate,
+      is_special_round: room.isSpecialRound, // Thêm is_special_round cho FE
+      isSpecialRound: room.isSpecialRound,
       players: players.map(p => ({
         user_id: p.userId.toString(),
+        id: p.userId.toString(), // Thêm id cho FE cũ
         display_name: p.displayName,
-        username: p.username
+        username: p.username,
+        isHost: String(p.userId) === String(room.hostId) // Thêm isHost cho Round1Enter
       }))
     };
 
@@ -183,9 +188,28 @@ const getRoomDetailController = async (req, res, next) => {
             : match.civilianKeyword;
             
           responseData.your_keyword = keyword;
-          responseData.yourKeyword = keyword; // Tương thích cả camelCase
+          responseData.yourKeyword = keyword; 
           responseData.keyword = keyword;
+          responseData.your_description = keyword;
+          responseData.yourDescription = keyword;
+          responseData.description = keyword;
           responseData.your_role = roleUpper;
+          responseData.match_id = match._id.toString();
+
+          // Cập nhật keyword cho từng player object nếu là chính mình
+          responseData.players = responseData.players.map(p => {
+            if (String(p.user_id) === String(user._id)) {
+              return {
+                ...p,
+                role: roleUpper,
+                keyword: keyword,
+                yourKeyword: keyword,
+                description: keyword,
+                yourDescription: keyword
+              };
+            }
+            return p;
+          });
         }
       }
     }
@@ -230,7 +254,7 @@ const getRoomByCodeController = async (req, res, next) => {
 const kickPlayerController = async (req, res, next) => {
   try {
     const { roomId } = req.params;
-    const { user_id } = req.body;
+    const { user_id } = req.body || {};
     const adminId = req.user._id;
 
     await kickPlayer(roomId, adminId, user_id);
@@ -248,7 +272,7 @@ const kickPlayerController = async (req, res, next) => {
 const transferHostController = async (req, res, next) => {
   try {
     const { roomId } = req.params;
-    const { user_id } = req.body;
+    const { user_id } = req.body || {};
     const currentHostId = req.user._id;
 
     await transferHost(roomId, currentHostId, user_id);
@@ -266,7 +290,7 @@ const transferHostController = async (req, res, next) => {
 const voteByRoomController = async (req, res, next) => {
   try {
     const { roomId } = req.params;
-    const { targetId } = req.body;
+    const { targetId } = req.body || {};
     const user = req.user;
 
     await voteByRoom(roomId, user._id, targetId);
@@ -331,7 +355,7 @@ const sendRoomMessageController = async (req, res, next) => {
  */
 const createSpecialRoomController = async (req, res, next) => {
   try {
-    const { is_private, room_code } = req.body;
+    const { room_code } = req.body || {};
     const user = req.user;
 
     const room = await createRoom(user._id, false, room_code, true);
