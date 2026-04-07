@@ -16,11 +16,11 @@ const {
   deleteKeyword,
   getAdminStats,
   adminSkipPhase,
-  addCoinsToUser
+  addCoinsToUser,
+  getAiDescription
 } = require('../controllers/adminController');
 const { protect } = require('../middleware/authMiddleware');
 const isAdmin = require('../middleware/adminMiddleware');
-
 // Tất cả các route admin đều yêu cầu đăng nhập và quyền Admin
 router.use(protect);
 router.use(isAdmin);
@@ -51,6 +51,7 @@ router.delete('/keywords/:id', deleteKeyword);
 
 // System stats
 router.get('/stats', getAdminStats);
+router.post('/ai-description', getAiDescription);
 
 // Match management (Skip phase)
 router.post('/matches/:matchId/skip-phase', adminSkipPhase);

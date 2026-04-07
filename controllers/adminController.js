@@ -7,6 +7,7 @@ const Match = require('../models/Match');
 const { refreshAllDurations, skipPhase } = require('../services/gameService');
 const { addReward } = require('../services/economyService');
 const socketService = require('../services/socketService');
+const { getAiDescription: getAiDescriptionFromAI } = require('../services/aiService');
 
 /**
  * @desc    Tặng xu cho người dùng (Admin)
@@ -578,6 +579,35 @@ const adminSkipPhase = async (req, res, next) => {
     next(error);
   }
 };
+/**
+ * @desc    Lấy mô tả AI game
+ * @route   POST /api/admin/ai-description
+ */
+const getAiDescription = async (req, res, next) => {
+  try {
+    const { prompt, keyword, round } = req.body;
+
+    if (!prompt && !keyword) {
+      return res.status(400).json({ message: 'Thiếu prompt hoặc keyword' });
+    }
+
+    // Admin test: truyền customPrompt
+    // Game: truyền keyword + round
+    const description = await getAiDescriptionFromAI(
+      keyword || prompt,
+      round || 1,
+      prompt || null  // customPrompt
+    );
+
+    res.json({
+      status: 'success',
+      prompt: prompt || keyword,
+      response: description
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 module.exports = {
   getGameSettings,
@@ -595,5 +625,6 @@ module.exports = {
   deleteKeyword,
   getAdminStats,
   adminSkipPhase,
-  addCoinsToUser
+  addCoinsToUser,
+  getAiDescription
 };

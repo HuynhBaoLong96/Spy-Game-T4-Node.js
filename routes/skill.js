@@ -21,6 +21,10 @@ router.post('/special-round', async (req, res, next) => {
       return res.status(403).json({ message: 'Chỉ chủ phòng mới có thể kích hoạt' });
     }
 
+    // Cập nhật trạng thái vòng đặc biệt trong Room
+    room.isSpecialRound = true;
+    await room.save();
+
     // Broadcast tới tất cả người trong phòng
     emitToRoom(room, 'SPECIAL_ROUND_ENABLED', {
       type: 'SPECIAL_ROUND_ENABLED',

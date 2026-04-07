@@ -33,6 +33,10 @@ const roomSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  isSpecialRound: {
+    type: Boolean,
+    default: false
+  },
   startedAt: {
     type: Date
   },

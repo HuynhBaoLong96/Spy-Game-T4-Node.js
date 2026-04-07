@@ -140,10 +140,23 @@ const getGameStateController = async (req, res, next) => {
       }),
       civilian_keyword: phaseName === 'GAME_OVER' ? session.civilianKeyword : undefined,
       spy_keyword: phaseName === 'GAME_OVER' ? session.spyKeyword : undefined,
-      my_keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
-      your_keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
-      keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') ? session.spyKeyword : session.civilianKeyword,
+      my_keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') 
+        ? (session.isSpecialRound && phaseName !== 'GAME_OVER' ? (session.spyDescription || session.spyKeyword) : session.spyKeyword) 
+        : (session.isSpecialRound && phaseName !== 'GAME_OVER' ? (session.civilianDescription || session.civilianKeyword) : session.civilianKeyword),
+      your_keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') 
+        ? (session.isSpecialRound && phaseName !== 'GAME_OVER' ? (session.spyDescription || session.spyKeyword) : session.spyKeyword) 
+        : (session.isSpecialRound && phaseName !== 'GAME_OVER' ? (session.civilianDescription || session.civilianKeyword) : session.civilianKeyword),
+      keyword: player && (player.role === 'SPY' || player.role === 'INFECTED') 
+        ? (session.isSpecialRound && phaseName !== 'GAME_OVER' ? (session.spyDescription || session.spyKeyword) : session.spyKeyword) 
+        : (session.isSpecialRound && phaseName !== 'GAME_OVER' ? (session.civilianDescription || session.civilianKeyword) : session.civilianKeyword),
+      is_special_round: session.isSpecialRound,
       your_role: player && player.role ? player.role.toUpperCase() : 'UNKNOWN',
+      // Thêm thông tin kỹ năng đã chọn cho Gián điệp và Đồng minh (để FE hiển thị textbox)
+      selected_ability: (player && (player.role === 'SPY' || player.role === 'INFECTED')) ? session.selectedAbility : undefined,
+      selectedAbility: (player && (player.role === 'SPY' || player.role === 'INFECTED')) ? session.selectedAbility : undefined,
+      ai_manipulated_this_round: (player && (player.role === 'SPY' || player.role === 'INFECTED')) ? session.aiManipulatedThisRound : undefined,
+      // Thêm flag nhận diện phe gián điệp để FE không phải check array string
+      is_spy_team: player && (player.role === 'SPY' || player.role === 'INFECTED'),
       // Thêm thông tin kết quả chọn vai trò để FE có thể hiển thị modal qua API fallback
       personal_role_check_result: session.detailedRoleCheckResults ? session.detailedRoleCheckResults[user._id.toString()] : null
     });

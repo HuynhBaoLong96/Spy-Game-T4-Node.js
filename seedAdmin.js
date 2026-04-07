@@ -26,13 +26,39 @@ const seedAdmin = async () => {
         username: 'admin1',
         email: 'admin1@spygame.com',
         displayName: 'Administrator 1',
-        passwordHash: '1234567',
+        passwordHash: '123456',
         role: 'ROLE_ADMIN',
         balance: 999999
       });
       console.log('Tạo tài khoản Admin1 thành công!');
+      await User.create({
+        username: 'aaa',
+        email: 'aaa@spygame.com',
+        displayName: 'aaa',
+        passwordHash: '123456',
+        role: 'ROLE_USER',
+        balance: 999999
+      });
+      console.log('Tạo tài khoản aaa thành công!');
+      await User.create({
+        username: 'bbb',
+        email: 'bbb@spygame.com',
+        displayName: 'bbb',
+        passwordHash: '123456',
+        role: 'ROLE_USER',
+        balance: 999999
+      });
+      console.log('Tạo tài khoản bbb thành công!');
     }
 
+    console.log('---------------------------');
+    console.log('Username: aaa');
+    console.log('Password: 123456');
+    console.log('Role: ROLE_USER');
+    console.log('---------------------------');
+    console.log('Username: bbb');
+    console.log('Password: 123456');
+    console.log('Role: ROLE_USER');
     console.log('---------------------------');
     console.log('Username: admin1');
     console.log('Password: 1234567');

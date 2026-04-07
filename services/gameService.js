@@ -98,6 +98,9 @@ const startGame = async (roomIdOrCode, hostUserId) => {
     roomId,
     civilianKeyword: keywordPair.civilianKeyword,
     spyKeyword: keywordPair.spyKeyword,
+    civilianDescription: keywordPair.civilianDescription || '',
+    spyDescription: keywordPair.spyDescription || '',
+    isSpecialRound: room.isSpecialRound || false,
     status: 'in_progress'
   });
 
@@ -108,6 +111,9 @@ const startGame = async (roomIdOrCode, hostUserId) => {
     roomCode: room.roomCode,
     civilianKeyword: keywordPair.civilianKeyword,
     spyKeyword: keywordPair.spyKeyword,
+    civilianDescription: keywordPair.civilianDescription || '',
+    spyDescription: keywordPair.spyDescription || '',
+    isSpecialRound: match.isSpecialRound,
     currentRound: 1,
     state: 'ROLE_ASSIGN',
     players: [],
@@ -191,8 +197,9 @@ const startGame = async (roomIdOrCode, hostUserId) => {
     console.error('[ERROR] No humans found to assign Spy!');
   }
 
-  // Reset adminSelectedSpyId sau khi đã dùng để tránh ván sau bị lặp lại nếu chủ phòng quên chọn
+  // Reset adminSelectedSpyId và isSpecialRound sau khi đã dùng để tránh ván sau bị lặp lại
   room.adminSelectedSpyId = null;
+  room.isSpecialRound = false;
   await room.save();
 
   session.players = players;
@@ -242,13 +249,19 @@ const broadcastRoles = (session) => {
     
     // Gửi thông tin vai trò riêng tư cho từng người (Java dùng /user/queue/role)
     // Cập nhật để khớp với yêu cầu của user: bao gồm phase và remaining_seconds
+    const isSpy = player.role === 'SPY';
+    const keyword = isSpy ? session.spyKeyword : session.civilianKeyword;
+    const description = isSpy ? session.spyDescription : session.civilianDescription;
+
     emitToUser(player.userId, 'role', {
       phase: 'ROLE_ASSIGN',
       remaining_seconds: session.durations.ROLE_ASSIGN,
       role: player.role.toUpperCase(),
       your_role: player.role.toUpperCase(),
-      your_keyword: player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
-      keyword: player.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
+      // Nếu là vòng đặc biệt, gửi mô tả thay vì từ khóa
+      your_keyword: session.isSpecialRound ? (description || keyword) : keyword,
+      keyword: session.isSpecialRound ? (description || keyword) : keyword,
+      is_special_round: session.isSpecialRound,
       match_id: session.matchId,
       round: session.currentRound,
       color: player.color,
@@ -313,17 +326,28 @@ const startPhaseTimer = (session, durationMs, nextPhaseFn) => {
     }))
   });
 
-  // Gửi lại keyword riêng cho từng người
+  // Gửi lại keyword và kỹ năng riêng cho từng người
   session.players.forEach(p => {
     if (p.isAi) return;
+    const isSpyTeam = (p.role === 'SPY' || p.role === 'INFECTED');
+    const keyword = isSpyTeam ? session.spyKeyword : session.civilianKeyword;
+    const description = isSpyTeam ? session.spyDescription : session.civilianDescription;
+
     emitToUser(p.userId, 'role', {
       phase: phase,
       remaining_seconds: Math.floor(durationMs / 1000),
-      your_keyword: p.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
-      keyword: p.role === 'SPY' ? session.spyKeyword : session.civilianKeyword,
+      // Nếu là vòng đặc biệt, gửi mô tả thay vì từ khóa
+      your_keyword: session.isSpecialRound ? (description || keyword) : keyword,
+      keyword: session.isSpecialRound ? (description || keyword) : keyword,
       your_role: p.role.toUpperCase(),
       role: p.role.toUpperCase(),
-      match_id: session.matchId
+      match_id: session.matchId,
+      is_special_round: session.isSpecialRound,
+      // Thêm thông tin kỹ năng cho Gián điệp qua Socket
+      selected_ability: isSpyTeam ? session.selectedAbility : undefined,
+      selectedAbility: isSpyTeam ? session.selectedAbility : undefined,
+      ai_manipulated_this_round: isSpyTeam ? session.aiManipulatedThisRound : undefined,
+      is_spy_team: isSpyTeam
     });
   });
 
@@ -760,13 +784,13 @@ const broadcastRoleCheckResults = async (session) => {
     if (isSpy && correct) {
       if (aiAlive) {
         abilities.push({
-          type: 'fake_message',
+          type: 'MANIPULATE_AI',
           name: 'Thao túng AI',
-          description: 'Bạn có quyền điều khiển AI miêu tả hoặc thảo luận theo ý mình.'
+          description: 'Điều khiển AI miêu tả hoặc thảo luận theo ý mình.'
         });
       } else {
         abilities.push({
-          type: 'infection',
+          type: 'INFECT',
           name: 'Tha hóa',
           description: 'Biến một người chơi khác thành đồng minh của bạn.'
         });
@@ -940,16 +964,9 @@ const autoDescribeForAi = async (session) => {
     return;
   }
 
-  // Nếu Spy có kỹ năng thao túng AI, AI sẽ KHÔNG tự động miêu tả.
-  // Quan trọng: Kiểm tra session.selectedAbility để biết Spy đã chọn kỹ năng chưa.
-  // Hoặc kiểm tra xem có Spy nào đoán đúng không (để tránh AI tự nói khi Spy sắp được thao túng)
-  const isAnySpyCorrect = Object.entries(session.roleCheckResults).some(([uid, correct]) => {
-    const p = session.players.find(player => player.userId === uid);
-    return correct && p && (p.role === 'SPY' || p.role === 'INFECTED');
-  });
-
-  if (session.selectedAbility === 'fake_message' || (session.currentRound > 1 && isAnySpyCorrect)) {
-    console.log(`[DEBUG] AI im lặng vì đang bị thao túng hoặc chờ thao túng.`);
+  // Nếu Spy có kỹ năng thao túng AI, AI sẽ KHÔNG tự động miêu tả để chờ Spy nhập nội dung.
+  if (session.selectedAbility === 'MANIPULATE_AI') {
+    console.log(`[DEBUG] AI im lặng vì đang bị thao túng bởi Gián điệp.`);
     return;
   }
 
@@ -976,8 +993,8 @@ const autoDiscussForAi = async (session) => {
   const ai = session.players.find(p => p.isAi && p.isAlive);
   if (!ai) return;
 
-  // Nếu Spy có quyền thao túng và chưa dùng trong vòng này, AI im lặng để Spy nói hộ
-  if (session.selectedAbility === 'fake_message' && !session.aiManipulatedThisRound) {
+  // Nếu Spy có quyền thao túng, AI im lặng hoàn toàn để Spy nói hộ
+  if (session.selectedAbility === 'MANIPULATE_AI') {
     return;
   }
 
@@ -1076,7 +1093,7 @@ module.exports = {
     
     // Broadcast theo format FE yêu cầu ban đầu (bọc trong object)
     const aliveHumans = session.players.filter(p => p.isAlive && !p.isAi);
-    const aiNeedsToDescribe = session.selectedAbility === 'fake_message';
+    const aiNeedsToDescribe = session.selectedAbility === 'MANIPULATE_AI';
     const totalRequiredCount = aliveHumans.length + (aiNeedsToDescribe ? 1 : 0);
 
     emitToTopic(`/topic/match/${matchId}/descriptions`, {
@@ -1195,9 +1212,9 @@ module.exports = {
     const abilities = [];
     if (isSpy && correct && isRoleGuess) {
       abilities.push({
-        type: 'fake_message',
+        type: 'MANIPULATE_AI',
         name: 'Thao túng AI',
-        description: 'Bạn có quyền điều khiển AI miêu tả hoặc thảo luận theo ý mình.'
+        description: 'Điều khiển AI miêu tả hoặc thảo luận theo ý mình.'
       });
     }
 
@@ -1264,8 +1281,8 @@ module.exports = {
 
     session.selectedAbility = abilityType;
     
-    const abilityName = abilityType === 'fake_message' ? 'Thao túng AI'
-      : abilityType === 'infection' ? 'Tha hóa'
+    const abilityName = abilityType === 'MANIPULATE_AI' ? 'Thao túng AI'
+      : abilityType === 'INFECT' ? 'Tha hóa'
       : 'Không dùng kỹ năng';
 
     emitToUser(userId, 'ability-result', {
@@ -1291,34 +1308,42 @@ module.exports = {
     
     return { confirmed: true, ability: abilityType };
   },
-  useFakeMessageAbility: async (matchId, userId, content) => {
+  useAiManipulationAbility: async (matchId, userId, type, content) => {
     const session = getSession(matchId);
     if (!session) throw new Error('Không tìm thấy trận đấu');
     
-    if (userId.toString() !== session.spyUserId) {
-      throw new Error('Chỉ Gián điệp mới có thể dùng kỹ năng này');
+    const player = session.players.find(p => p.userId === userId.toString());
+    const isSpyTeam = player && (player.role === 'SPY' || player.role === 'INFECTED');
+
+    if (!isSpyTeam) {
+      throw new Error('Chỉ Gián điệp và đồng minh mới có thể dùng kỹ năng này');
     }
 
-    if (session.selectedAbility !== 'fake_message') {
-      throw new Error('Bạn chưa chọn kỹ năng Thao túng AI');
-    }
-
-    if (session.aiManipulatedThisRound) {
-      throw new Error('Bạn đã sử dụng kỹ năng này trong vòng này rồi');
+    if (session.selectedAbility !== 'MANIPULATE_AI') {
+      throw new Error('Kỹ năng Thao túng AI chưa được chọn');
     }
 
     const ai = session.players.find(p => p.isAi && p.isAlive);
     if (!ai) throw new Error('AI không còn sống để thao túng');
 
-    // Tự động xác định type dựa trên state hiện tại
-    let type = '';
-    if (session.state === 'DESCRIBING') type = 'DESCRIBE';
-    else if (session.state === 'DISCUSSING') type = 'DISCUSS';
-    else throw new Error('Không thể dùng kỹ năng trong giai đoạn này');
+    // Nếu type không được truyền, tự động xác định dựa trên state
+    let finalType = type;
+    if (!finalType) {
+      if (session.state === 'DESCRIBING') finalType = 'DESCRIBE';
+      else if (session.state === 'DISCUSSING') finalType = 'DISCUSS';
+    }
 
-    if (type === 'DESCRIBE') {
+    if (finalType === 'DESCRIBE') {
+      if (session.state !== 'DESCRIBING') throw new Error('Chỉ có thể miêu tả trong giai đoạn miêu tả');
+      if (session.aiManipulatedThisRound) throw new Error('Bạn đã sử dụng kỹ năng miêu tả cho AI trong vòng này rồi');
+      
       await module.exports.submitDescription(matchId, ai.userId, content);
-    } else {
+      session.aiManipulatedThisRound = true; // Chỉ đánh dấu đã dùng miêu tả
+    } else if (finalType === 'DISCUSS') {
+      if (session.state !== 'DISCUSSING' && session.state !== 'DESCRIBING') {
+        throw new Error('Chỉ có thể thảo luận trong giai đoạn thảo luận hoặc miêu tả');
+      }
+      
       const name = getAnonymousName(ai);
       emitToTopic(`/topic/match/${matchId}/chat`, {
         sender_id: ai.userId,
@@ -1326,10 +1351,12 @@ module.exports = {
         content,
         timestamp: Date.now()
       });
+      // Không set aiManipulatedThisRound = true để cho phép chat nhiều lần
+    } else {
+      throw new Error('Loại thao túng không hợp lệ hoặc không đúng thời điểm');
     }
 
-    session.aiManipulatedThisRound = true;
-    return { success: true };
+    return { success: true, type: finalType };
   },
   infectPlayer: async (matchId, userId, targetUserId) => {
     const session = getSession(matchId);
@@ -1361,50 +1388,14 @@ module.exports = {
 
     return { success: true };
   },
-  useAiManipulationAbility: async (matchId, userId, type, content) => {
-    const session = getSession(matchId);
-    if (!session) throw new Error('Không tìm thấy trận đấu');
-    
-    if (userId.toString() !== session.spyUserId) {
-      throw new Error('Chỉ Gián điệp mới có thể dùng kỹ năng này');
-    }
-
-    if (session.selectedAbility !== 'MANIPULATE_AI') {
-      throw new Error('Bạn chưa chọn kỹ năng Thao túng AI');
-    }
-
-    if (session.aiManipulatedThisRound) {
-      throw new Error('Bạn đã sử dụng kỹ năng này trong vòng này rồi');
-    }
-
-    const ai = session.players.find(p => p.isAi && p.isAlive);
-    if (!ai) throw new Error('AI không còn sống để thao túng');
-
-    if (type === 'DESCRIBE') {
-      if (session.state !== 'DESCRIBING') throw new Error('Chỉ có thể miêu tả trong giai đoạn miêu tả');
-      await module.exports.submitDescription(matchId, ai.userId, content);
-    } else if (type === 'DISCUSS') {
-      if (session.state !== 'DISCUSSING') throw new Error('Chỉ có thể thảo luận trong giai đoạn thảo luận');
-      const name = getAnonymousName(ai);
-      emitToTopic(`/topic/match/${matchId}/chat`, {
-        sender_id: ai.userId,
-        sender_name: name,
-        content,
-        timestamp: Date.now()
-      });
-    } else {
-      throw new Error('Loại thao túng không hợp lệ');
-    }
-
-    session.aiManipulatedThisRound = true;
-    return { success: true };
-  },
   useAbility: async (matchId, userId, type, content) => {
     const session = getSession(matchId);
     if (!session) throw new Error('Không tìm thấy trận đấu');
 
-    if (userId.toString() !== session.spyUserId) {
-      throw new Error('Chỉ Gián điệp mới có thể dùng kỹ năng');
+    const player = session.players.find(p => p.userId === userId.toString());
+    const isSpyTeam = player && (player.role === 'SPY' || player.role === 'INFECTED');
+    if (!isSpyTeam) {
+      throw new Error('Chỉ Gián điệp và đồng minh mới có thể dùng kỹ năng');
     }
 
     const ability = session.selectedAbility;
@@ -1412,8 +1403,6 @@ module.exports = {
 
     if (ability === 'MANIPULATE_AI') {
       return await module.exports.useAiManipulationAbility(matchId, userId, type, content);
-    } else if (ability === 'FAKE_MESSAGE') {
-      return await module.exports.useFakeMessageAbility(matchId, userId, content);
     } else {
       throw new Error(`Kỹ năng ${ability} không hỗ trợ dùng qua đây`);
     }
